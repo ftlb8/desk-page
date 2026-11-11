@@ -18,6 +18,11 @@
     { id: "cea", label: "CEA" },
     { id: "personal", label: "Personal" },
   ];
+  var VIEWS = [
+    { id: "inbox", label: "Inbox" },
+    { id: "commitments", label: "Commitments" },
+    { id: "tasks", label: "Tasks" },
+  ];
   var DAY = 24 * 60 * 60 * 1000;
 
   var state = {
@@ -28,6 +33,7 @@
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
+    view: readPref("desk.view", "inbox"), // inbox | commitments | tasks
     seen: null,   // ids already shown, to tell which waiting items are new
     loading: false,
     reloadTimer: null,
@@ -384,6 +390,11 @@
       if (state.filter !== "all" && item.space !== state.filter) return;
       groups[b].push(item);
     });
+    // Later and Closed follow the section: promises in Commitments, everything else in Inbox.
+    var promises = state.view === "commitments";
+    ["later", "closed"].forEach(function (k) {
+      groups[k] = groups[k].filter(function (item) { return (item.lane === "commitment") === promises; });
+    });
     groups.waiting.sort(byPriority);
     groups.look.sort(byPriority);
     groups.commit.sort(function (a, b) {
@@ -400,8 +411,29 @@
     renderTasks();
     fill("list-later", "n-later", groups.later, "later", null);
     fill("list-closed", "n-closed", groups.closed, "closed", null);
-    $("box-later").hidden = !groups.later.length;
-    $("box-closed").hidden = !groups.closed.length;
+    document.querySelectorAll("[data-view]").forEach(function (section) {
+      section.hidden = section.getAttribute("data-view") !== state.view;
+    });
+    var lists = state.view !== "tasks";
+    $("box-later").hidden = !lists || !groups.later.length;
+    $("box-closed").hidden = !lists || !groups.closed.length;
+
+    var openTasks = state.tasks.filter(function (t) {
+      return t.status === "open" && (state.filter === "all" || t.space === state.filter);
+    }).length;
+    var counts = { inbox: groups.waiting.length, commitments: groups.commit.length, tasks: openTasks };
+    var views = $("views");
+    views.textContent = "";
+    VIEWS.forEach(function (v) {
+      var b = button(v.label + (counts[v.id] ? " " + counts[v.id] : ""), "view" + (state.view === v.id ? " on" : ""), function () {
+        state.view = v.id;
+        writePref("desk.view", v.id);
+        render();
+        window.scrollTo(0, 0);
+      });
+      b.setAttribute("aria-pressed", state.view === v.id ? "true" : "false");
+      views.appendChild(b);
+    });
 
     var totalWaiting = 0;
     Object.keys(waitingBySpace).forEach(function (k) { totalWaiting += waitingBySpace[k]; });

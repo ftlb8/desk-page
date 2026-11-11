@@ -168,3 +168,9 @@ details#box-closed .card, details#box-later .card { opacity: 0.85; }
 .made { font-size: 0.85rem; color: var(--muted); }
 details#box-tasks-done { margin-top: 10px; }
 details#box-tasks-done > summary { font-size: 0.85rem; margin-bottom: 8px; }
+
+/* Sections */
+.views { display: flex; gap: 4px; max-width: 780px; margin: 0 auto; padding: 12px 20px 0; border-bottom: 1px solid var(--line); }
+.view { padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+.view.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+@media (max-width: 520px) { .views { padding: 10px 14px 0; } .view { padding: 8px 10px; } }
