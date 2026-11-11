@@ -199,3 +199,4 @@ details#box-tasks-done > summary { font-size: 0.85rem; margin-bottom: 8px; }
 .hint { font-size: 0.85rem; color: var(--muted); margin: 10px 0 0; }
 .td-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .td-actions .primary { padding: 8px 18px; }
+#td-project-new { margin-top: 6px; }

@@ -621,15 +621,33 @@
 
   var draft = null; // the task shown in the dialog; id is null until it is saved
 
-  function fillProjectChoices(space) {
-    var box = $("project-names");
-    box.textContent = "";
+  // The project picker: this organisation's projects, "No project", and "New project…".
+  // A suggested name that does not exist yet arrives selected as a new project.
+  function fillProjectChoices(space, chosen) {
+    var pick = $("td-project");
+    var fresh = $("td-project-new");
+    pick.textContent = "";
+    var add = function (value, label) {
+      var o = el("option", null, label);
+      o.value = value;
+      pick.appendChild(o);
+    };
+    add("", "No project");
+    var match = "";
     state.projects.forEach(function (p) {
       if (p.space !== space) return;
-      var o = document.createElement("option");
-      o.value = p.name;
-      box.appendChild(o);
+      add(p.name, p.name);
+      if (chosen && p.name.toLowerCase() === String(chosen).toLowerCase()) match = p.name;
     });
+    add("__new__", "New project…");
+    var isNew = !!chosen && !match;
+    pick.value = isNew ? "__new__" : match;
+    fresh.value = isNew ? chosen : "";
+    fresh.hidden = !isNew;
+  }
+
+  function chosenProject() {
+    return $("td-project").value === "__new__" ? $("td-project-new").value : $("td-project").value;
   }
 
   function drawLinks() {
@@ -651,7 +669,6 @@
     $("td-hint").textContent = hint || "";
     $("td-title").value = task.title || "";
     $("td-space").value = task.space;
-    $("td-project").value = task.project || "";
     $("td-horizon").value = task.horizon || "week";
     $("td-due").value = task.due_on || "";
     $("td-repeat").value = task.repeat || "";
@@ -660,7 +677,7 @@
     $("td-link-label").value = "";
     $("td-link-url").value = "";
     $("td-error").hidden = true;
-    fillProjectChoices(task.space);
+    fillProjectChoices(task.space, task.project || "");
     drawLinks();
 
     var source = $("td-source");
@@ -727,7 +744,7 @@
       var row = {
         space: space,
         title: title,
-        project_id: await projectId(space, $("td-project").value),
+        project_id: await projectId(space, chosenProject()),
         horizon: $("td-horizon").value,
         due_on: $("td-due").value || null,
         repeat: $("td-repeat").value || null,
@@ -928,7 +945,12 @@
   $("td-form").addEventListener("submit", function (event) { event.preventDefault(); saveDraft(); });
   $("td-space").addEventListener("change", function () {
     writePref("desk.task-space", $("td-space").value);
-    fillProjectChoices($("td-space").value);
+    fillProjectChoices($("td-space").value, "");
+  });
+  $("td-project").addEventListener("change", function () {
+    var fresh = $("td-project-new");
+    fresh.hidden = $("td-project").value !== "__new__";
+    if (!fresh.hidden) fresh.focus();
   });
   $("td-cancel").addEventListener("click", function () { $("task-dialog").close(); });
   $("td-done").addEventListener("click", function () {
