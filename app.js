@@ -30,6 +30,7 @@
     items: [],
     tasks: [],
     meetings: [],
+    openMeetings: {}, // ids of meetings whose details you opened
     projects: [],
     people: {},   // "space:userId" -> { name, is_vip }
     channels: {}, // "space:channelId" -> { name, kind }
@@ -706,23 +707,32 @@
       if (names.length > 5) shown += " +" + (names.length - 5) + " more";
       node.appendChild(el("p", "reason", "With " + shown));
     }
-    if (m.brief) node.appendChild(el("p", "gist", m.brief));
-
     var owed = openOwed(m);
-    if (owed.length) {
-      var box = el("div", "owed");
-      box.appendChild(el("p", "owed-head", "What you owe"));
-      owed.forEach(function (o) {
-        var row = el("button", "owed-row");
-        row.type = "button";
-        row.appendChild(el("span", "owed-title", o.title));
-        if (o.why) row.appendChild(el("span", "owed-why", o.why));
-        row.addEventListener("click", function () {
-          if (o.kind === "task") openTask(o.target); else goToItem(o.target);
+    if (m.brief || owed.length) {
+      var fold = el("details", "message");
+      fold.appendChild(el("summary", null, (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "")));
+      if (m.brief) fold.appendChild(el("p", "gist", m.brief));
+      if (owed.length) {
+        var box = el("div", "owed");
+        box.appendChild(el("p", "owed-head", "What you owe"));
+        owed.forEach(function (o) {
+          var row = el("button", "owed-row");
+          row.type = "button";
+          row.appendChild(el("span", "owed-title", o.title));
+          if (o.why) row.appendChild(el("span", "owed-why", o.why));
+          row.addEventListener("click", function () {
+            if (o.kind === "task") openTask(o.target); else goToItem(o.target);
+          });
+          box.appendChild(row);
         });
-        box.appendChild(row);
+        fold.appendChild(box);
+      }
+      // The page redraws now and then; remember which folds you opened so they stay open.
+      fold.open = !!state.openMeetings[m.id];
+      fold.addEventListener("toggle", function () {
+        if (fold.open) state.openMeetings[m.id] = true; else delete state.openMeetings[m.id];
       });
-      node.appendChild(box);
+      node.appendChild(fold);
     }
 
     var join = httpsLink(m.join_url);

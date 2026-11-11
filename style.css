@@ -273,3 +273,5 @@ details.earlier .card { opacity: 0.8; }
 .flash { animation: flash 2.2s ease-out; }
 @keyframes flash { 0%, 55% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
 @media (prefers-reduced-motion: reduce) { .flash { animation: none; box-shadow: 0 0 0 3px var(--accent); } }
+.card.meeting .message .gist { margin-top: 6px; }
+.card.meeting .message .owed { margin-top: 10px; padding-top: 0; border-top: 0; }
