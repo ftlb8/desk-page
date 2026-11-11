@@ -304,6 +304,37 @@
     return null;
   }
 
+  // ---------- Confirmation: a brief stamp on the card, then a note with Undo ----------
+
+  var calm = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  // Stamps the card or row ("✓ Done"), holds it for a moment, then folds it away.
+  function leave(node, label, tone) {
+    return new Promise(function (resolve) {
+      if (!node || calm) { resolve(); return; }
+      node.classList.add("confirmed", tone);
+      node.appendChild(el("div", "stamp", label));
+      setTimeout(function () {
+        node.style.height = node.offsetHeight + "px";
+        void node.offsetHeight; // fix the starting height before it shrinks
+        node.classList.add("leaving");
+        node.style.height = "0px";
+        setTimeout(resolve, 300);
+      }, 420);
+    });
+  }
+
+  var toastTimer = null;
+  function toast(text, undo) {
+    $("toast-text").textContent = text;
+    var again = $("toast-undo");
+    again.hidden = !undo;
+    again.onclick = undo ? function () { $("toast").hidden = true; undo(); } : null;
+    $("toast").hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { $("toast").hidden = true; }, 6000);
+  }
+
   function closedHow(item) {
     if (item.status === "dismissed") return "Dismissed";
     if (item.closed_by === "reply") return "You replied";
@@ -314,6 +345,7 @@
   function card(item, kind) {
     var m = item.messages || {};
     var node = el("article", "card urgency-" + item.urgency);
+    node.setAttribute("data-item", item.id);
 
     var top = el("div", "card-top");
     top.appendChild(el("span", "tag tag-" + item.space, spaceLabel(item.space)));
@@ -531,12 +563,14 @@
 
   function taskRow(task) {
     var row = el("div", "task" + (task.status === "done" ? " is-done" : ""));
+    row.setAttribute("data-task", task.id);
     var tick = document.createElement("input");
     tick.type = "checkbox";
     tick.checked = task.status === "done";
     tick.setAttribute("aria-label", task.status === "done" ? "Reopen task" : "Mark task done");
-    tick.addEventListener("change", function () {
-      saveTask(task.id, tick.checked ? { status: "done", done_at: new Date().toISOString() } : { status: "open", done_at: null });
+    tick.addEventListener("change", async function () {
+      if (!tick.checked) { saveTask(task.id, { status: "open", done_at: null }); return; }
+      finishTask(task, row);
     });
     row.appendChild(tick);
 
@@ -644,6 +678,21 @@
     done.forEach(function (t) { doneList.appendChild(taskRow(t)); });
     $("n-tasks-done").textContent = done.length ? String(done.length) : "";
     $("box-tasks-done").hidden = !done.length;
+  }
+
+  // Ticking a task off: stamp the row, fold it away, then say so (with Undo unless it repeats,
+  // because a repeating task has already produced its next occurrence).
+  async function finishTask(task, row) {
+    var saving = sb.from("tasks").update({ status: "done", done_at: new Date().toISOString() }).eq("id", task.id);
+    await leave(row || document.querySelector('[data-task="' + task.id + '"]'), "✓ Done", "ok");
+    task.status = "done";
+    task.done_at = new Date().toISOString();
+    render();
+    var res = await saving;
+    if (res.error) notice("That did not save: " + res.error.message);
+    else if (task.repeat) toast("Task done. The next one has been added.", null);
+    else toast("Task done.", function () { saveTask(task.id, { status: "open", done_at: null }); });
+    await load();
   }
 
   async function saveTask(id, changes) {
@@ -990,10 +1039,16 @@
   }
 
   async function act(id, action, at) {
-    // Show the change at once; the save and the fresh data follow.
     var item = state.items.filter(function (i) { return i.id === id; })[0];
+    var saving = sb.rpc("set_item_state", { p_item: id, p_action: action, p_until: at || null }); // saved at once
+    var closing = action === "done" || action === "dismiss";
+    if (item && closing) {
+      var label = action === "dismiss" ? "Dismissed" : item.kind === "decision" ? "✓ Noted" : "✓ Done";
+      await leave(document.querySelector('[data-item="' + id + '"]'), label, action === "done" ? "ok" : "dismissed");
+    }
+    // Show the change without waiting for fresh data.
     if (item) {
-      if (action === "done" || action === "dismiss") {
+      if (closing) {
         item.status = action === "done" ? "done" : "dismissed";
         item.closed_by = "user";
         item.closed_at = new Date().toISOString();
@@ -1009,8 +1064,13 @@
       }
       render();
     }
-    var res = await sb.rpc("set_item_state", { p_item: id, p_action: action, p_until: at || null });
-    if (res.error) notice("That did not save: " + res.error.message);
+    var res = await saving;
+    if (res.error) {
+      notice("That did not save: " + res.error.message);
+    } else if (action !== "reopen") {
+      var said = action === "dismiss" ? "Dismissed." : action === "snooze" ? "Back " + until(at) + "." : item && item.kind === "decision" ? "Noted." : "Marked done.";
+      toast(said, function () { act(id, "reopen"); });
+    }
     await load();
   }
 
@@ -1112,7 +1172,8 @@
   $("td-cancel").addEventListener("click", function () { $("task-dialog").close(); });
   $("td-done").addEventListener("click", function () {
     $("task-dialog").close();
-    saveTask(draft.id, { status: "done", done_at: new Date().toISOString() });
+    var task = state.tasks.filter(function (t) { return t.id === draft.id; })[0];
+    if (task) finishTask(task, null);
   });
   $("td-drop").addEventListener("click", function () {
     $("task-dialog").close();

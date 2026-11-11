@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="13">
+  <meta name="desk-version" content="14">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -89,6 +89,11 @@
 
     <footer id="updated" class="updated"></footer>
 
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+      <span id="toast-text"></span>
+      <button id="toast-undo" type="button" class="quiet">Undo</button>
+    </div>
+
     <dialog id="task-dialog" class="task-dialog" aria-labelledby="td-heading">
       <form id="td-form" method="dialog" autocomplete="off">
         <h2 id="td-heading">Task</h2>
@@ -143,9 +148,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=13"></script>
-  <script src="config.js?v=13"></script>
-  <script src="format.js?v=13"></script>
-  <script src="app.js?v=13"></script>
+  <script src="vendor/supabase-2.119.0.js?v=14"></script>
+  <script src="config.js?v=14"></script>
+  <script src="format.js?v=14"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>
