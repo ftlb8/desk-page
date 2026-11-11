@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="10">
+  <meta name="desk-version" content="11">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -108,6 +108,16 @@
         </div>
         <label for="td-context">Background</label>
         <textarea id="td-context" rows="4" maxlength="4000"></textarea>
+        <label>Steps</label>
+        <div id="td-steps" class="td-steps"></div>
+        <div class="td-row td-addlink">
+          <input id="td-step-text" type="text" maxlength="200" placeholder="Add a step" aria-label="New step">
+          <button id="td-step-add" type="button" class="btn">Add step</button>
+        </div>
+        <div id="td-related-box" hidden>
+          <label>Related open work</label>
+          <div id="td-related" class="td-related"></div>
+        </div>
         <label for="td-notes">Notes</label>
         <textarea id="td-notes" rows="4" maxlength="20000"></textarea>
         <label>Links</label>
@@ -129,9 +139,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=10"></script>
-  <script src="config.js?v=10"></script>
-  <script src="format.js?v=10"></script>
-  <script src="app.js?v=10"></script>
+  <script src="vendor/supabase-2.119.0.js?v=11"></script>
+  <script src="config.js?v=11"></script>
+  <script src="format.js?v=11"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>

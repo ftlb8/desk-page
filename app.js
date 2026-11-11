@@ -498,6 +498,10 @@
     var due = dueLabel(task.due_on);
     if (due && task.status === "open") tags.appendChild(el("span", "flag flag-" + (due.late ? 3 : 2), due.text));
     if (task.repeat) tags.appendChild(el("span", "repeat", "Repeats " + REPEATS[task.repeat]));
+    var steps = Array.isArray(task.steps) ? task.steps : [];
+    if (steps.length && task.status === "open") {
+      tags.appendChild(el("span", "repeat", steps.filter(function (x) { return x.done; }).length + "/" + steps.length + " steps"));
+    }
     main.appendChild(tags);
     row.appendChild(main);
 
@@ -662,6 +666,65 @@
     if (!draft.links.length) box.appendChild(el("p", "empty", "No links yet."));
   }
 
+  function drawSteps() {
+    var box = $("td-steps");
+    box.textContent = "";
+    draft.steps.forEach(function (step, i) {
+      var row = el("label", "td-step" + (step.done ? " is-done" : ""));
+      var tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = !!step.done;
+      tick.addEventListener("change", function () {
+        step.done = tick.checked;
+        row.className = "td-step" + (step.done ? " is-done" : "");
+        // On a saved task a tick is kept straight away; on a new one it is saved with the task.
+        if (draft.id) sb.from("tasks").update({ steps: draft.steps }).eq("id", draft.id).then(function () { load(); });
+      });
+      row.appendChild(tick);
+      row.appendChild(el("span", null, step.text));
+      row.appendChild(button("Remove", "quiet", function (event) { event.preventDefault(); draft.steps.splice(i, 1); drawSteps(); }));
+      box.appendChild(row);
+    });
+    if (!draft.steps.length) box.appendChild(el("p", "empty", "No steps."));
+  }
+
+  function addStep() {
+    var text = $("td-step-text").value.trim();
+    if (!text) return;
+    draft.steps.push({ text: text, done: false });
+    $("td-step-text").value = "";
+    drawSteps();
+  }
+
+  // Other open tasks, asks and promises about the same thing. Each opens what it points to.
+  function drawRelated() {
+    var box = $("td-related");
+    box.textContent = "";
+    $("td-related-box").hidden = !draft.related.length;
+    draft.related.forEach(function (r) {
+      var row = el("div", "td-link");
+      var kind = r.kind === "task" ? "Task" : r.lane === "commitment" ? "Promise" : "Inbox";
+      row.appendChild(el("span", "kind", kind));
+      var target = r.kind === "task"
+        ? state.tasks.filter(function (t) { return t.id === r.id && t.status === "open"; })[0]
+        : state.items.filter(function (i) { return i.id === r.id && (i.status === "open" || i.status === "snoozed"); })[0];
+      if (!target) {
+        row.appendChild(el("span", "closed-ref", r.title + " (closed)"));
+      } else if (r.kind === "task") {
+        row.appendChild(button(r.title, "ref", function () { openTask(target); }));
+      } else {
+        row.appendChild(button(r.title, "ref", function () {
+          $("task-dialog").close();
+          state.view = target.lane === "commitment" ? "commitments" : "inbox";
+          writePref("desk.view", state.view);
+          if (state.filter !== "all" && state.filter !== target.space) state.filter = "all";
+          render();
+        }));
+      }
+      box.appendChild(row);
+    });
+  }
+
   function showDialog(task, hint) {
     draft = task;
     $("td-heading").textContent = task.id ? "Task" : "New task";
@@ -677,8 +740,11 @@
     $("td-link-label").value = "";
     $("td-link-url").value = "";
     $("td-error").hidden = true;
+    $("td-step-text").value = "";
     fillProjectChoices(task.space, task.project || "");
     drawLinks();
+    drawSteps();
+    drawRelated();
 
     var source = $("td-source");
     source.textContent = "";
@@ -701,11 +767,13 @@
       id: task.id, status: task.status, space: task.space, title: task.title, project: projectName(task) || "",
       horizon: task.horizon, due_on: task.due_on, repeat: task.repeat, context: task.context, notes: task.notes,
       links: Array.isArray(task.links) ? task.links.slice() : [], source_item_id: task.source_item_id,
+      steps: (Array.isArray(task.steps) ? task.steps : []).map(function (x) { return { text: String(x.text || ""), done: !!x.done }; }),
+      related: Array.isArray(task.related) ? task.related.slice() : [],
     });
   }
 
   function blankTask(space, title) {
-    return { id: null, status: "open", space: space, title: title || "", project: "", horizon: "week", due_on: null, repeat: null, context: "", notes: "", links: [], source_item_id: null };
+    return { id: null, status: "open", space: space, title: title || "", project: "", horizon: "week", due_on: null, repeat: null, context: "", notes: "", links: [], steps: [], related: [], source_item_id: null };
   }
 
   function withSuggestion(task, s) {
@@ -717,6 +785,8 @@
     task.due_on = s.due_on || task.due_on;
     task.repeat = s.repeat || null;
     task.context = s.context || "";
+    task.steps = (s.steps || []).map(function (text) { return { text: String(text), done: false }; });
+    task.related = Array.isArray(s.related) ? s.related : [];
     return task;
   }
 
@@ -751,6 +821,8 @@
         context: $("td-context").value.trim() || null,
         notes: $("td-notes").value.trim() || null,
         links: draft.links,
+        steps: draft.steps,
+        related: draft.related,
       };
       var res;
       if (draft.id) {
@@ -797,7 +869,7 @@
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
         sb.from("accounts").select("space, slack_url, slack_user_id, email"),
         sb.from("tasks")
-          .select("id, space, project_id, title, notes, context, links, repeat, horizon, status, due_on, source_item_id, created_at, done_at, projects(name)")
+          .select("id, space, project_id, title, notes, context, links, steps, related, repeat, horizon, status, due_on, source_item_id, created_at, done_at, projects(name)")
           .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
           .order("created_at", { ascending: true })
           .limit(1000),
@@ -960,6 +1032,16 @@
   $("td-drop").addEventListener("click", function () {
     $("task-dialog").close();
     saveTask(draft.id, { status: "dropped", done_at: new Date().toISOString() });
+  });
+  $("td-step-add").addEventListener("click", addStep);
+  // Enter in the small "add" boxes adds the step or link instead of saving the whole task.
+  $("td-step-text").addEventListener("keydown", function (event) {
+    if (event.key === "Enter") { event.preventDefault(); addStep(); }
+  });
+  ["td-link-label", "td-link-url"].forEach(function (id) {
+    $(id).addEventListener("keydown", function (event) {
+      if (event.key === "Enter") { event.preventDefault(); $("td-link-add").click(); }
+    });
   });
   $("td-link-add").addEventListener("click", function () {
     var url = F.safeUrl($("td-link-url").value.trim());

@@ -200,3 +200,11 @@ details#box-tasks-done > summary { font-size: 0.85rem; margin-bottom: 8px; }
 .td-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .td-actions .primary { padding: 8px 18px; }
 #td-project-new { margin-top: 6px; }
+.td-step { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 6px !important; font-size: 0.95rem !important; color: var(--ink) !important; }
+.td-step input { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: var(--accent); }
+.td-step span { flex: 1; overflow-wrap: anywhere; }
+.td-step.is-done span { text-decoration: line-through; color: var(--muted); }
+.kind { font-size: 0.75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; flex: none; }
+.ref { border: 0; background: none; padding: 0; text-align: left; color: var(--accent); font-size: 0.92rem; }
+.ref:hover { text-decoration: underline; text-underline-offset: 3px; }
+.closed-ref { color: var(--muted); font-size: 0.92rem; }
