@@ -99,6 +99,7 @@ main { max-width: 780px; margin: 0 auto; padding: 0 20px 20px; }
 .reason { margin: 0; color: var(--muted); font-size: 0.9rem; }
 .message { margin-top: 8px; font-size: 0.92rem; }
 .message summary, details > summary { cursor: pointer; color: var(--muted); }
+.subject { margin: 6px 0 0; font-weight: 600; overflow-wrap: anywhere; }
 .body { margin: 6px 0 0; padding: 8px 10px; border-left: 2px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .btn {

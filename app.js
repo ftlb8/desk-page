@@ -87,12 +87,41 @@
     return id;
   }
 
+  function isEmail(item) {
+    return !!item.messages && item.messages.source === "gmail";
+  }
+
+  function authorLabel(item) {
+    var m = item.messages || {};
+    if (isEmail(item)) return m.author_name || m.author_id || "Someone";
+    var p = state.people[item.space + ":" + m.author_id];
+    return (p && p.name ? p.name : "Someone") + (p && p.is_vip ? " ★" : "");
+  }
+
   function whereLabel(item) {
     var m = item.messages || {};
+    if (isEmail(item)) return "Email";
     if (m.channel_type === "im") return "Direct message";
     if (m.channel_type === "mpim") return "Group message";
     var c = state.channels[item.space + ":" + m.channel_id];
     return "#" + (c && c.name ? c.name : "channel");
+  }
+
+  // Opens the thread in the right Google account, whichever accounts the browser is signed in to.
+  function gmailLink(item) {
+    var m = item.messages || {};
+    var account = state.accounts[item.space];
+    if (!account || !account.email || !m.channel_id || !/^[0-9a-f]+$/i.test(m.channel_id)) return null;
+    return "https://mail.google.com/mail/?authuser=" + encodeURIComponent(account.email) + "#all/" + m.channel_id;
+  }
+
+  function sourceLink(item) {
+    if (isEmail(item)) {
+      var g = gmailLink(item);
+      return g ? { href: g, label: "Open in Gmail" } : null;
+    }
+    var s = slackLink(item);
+    return s ? { href: s, label: "Open in Slack" } : null;
   }
 
   function slackLink(item) {
@@ -145,7 +174,6 @@
 
   function card(item, kind) {
     var m = item.messages || {};
-    var author = state.people[item.space + ":" + m.author_id];
     var node = el("article", "card urgency-" + item.urgency);
 
     var top = el("div", "card-top");
@@ -153,8 +181,7 @@
     if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
       top.appendChild(el("span", "flag flag-" + item.urgency, item.urgency === 3 ? "Today" : "Soon"));
     }
-    var meta = (author && author.name ? author.name : "Someone") + (author && author.is_vip ? " ★" : "") +
-      " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
+    var meta = authorLabel(item) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
     top.appendChild(el("span", "meta", meta));
     node.appendChild(top);
 
@@ -169,16 +196,17 @@
 
     if (m.body) {
       var more = el("details", "message");
-      more.appendChild(el("summary", null, "Message"));
-      more.appendChild(el("p", "body", plain(item.space, m.body)));
+      more.appendChild(el("summary", null, isEmail(item) ? "Email" : "Message"));
+      if (isEmail(item) && m.subject) more.appendChild(el("p", "subject", m.subject));
+      more.appendChild(el("p", "body", isEmail(item) ? m.body : plain(item.space, m.body)));
       node.appendChild(more);
     }
 
     var actions = el("div", "actions");
-    var link = slackLink(item);
+    var link = sourceLink(item);
     if (link) {
-      var a = el("a", "btn", "Open in Slack");
-      a.href = link;
+      var a = el("a", "btn", link.label);
+      a.href = link.href;
       a.target = "_blank";
       a.rel = "noopener noreferrer";
       actions.appendChild(a);
@@ -282,13 +310,13 @@
       var since = new Date(Date.now() - DAY).toISOString();
       var results = await Promise.all([
         sb.from("items")
-          .select("id, space, lane, status, title, reason, urgency, created_at, closed_at, closed_by, snooze_until, messages(channel_id, channel_type, thread_ts, ts, author_id, body, occurred_at)")
+          .select("id, space, lane, status, title, reason, urgency, created_at, closed_at, closed_by, snooze_until, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
           .or('status.in.(open,snoozed),closed_at.gte."' + since + '"')
           .order("created_at", { ascending: false })
           .limit(500),
         sb.from("people").select("space, slack_user_id, name, is_vip").limit(5000),
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
-        sb.from("accounts").select("space, slack_url"),
+        sb.from("accounts").select("space, slack_url, email"),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -361,10 +389,8 @@
     state.seen = ids;
     if (!fresh.length || !alertsUsable() || Notification.permission !== "granted") return;
     fresh.slice(0, 3).forEach(function (item) {
-      var m = item.messages || {};
-      var author = state.people[item.space + ":" + m.author_id];
       try {
-        new Notification((author && author.name ? author.name : "Someone") + " · " + spaceLabel(item.space), {
+        new Notification(authorLabel(item).replace(" ★", "") + " · " + spaceLabel(item.space), {
           body: item.title,
           tag: "desk-item-" + item.id,
         });
