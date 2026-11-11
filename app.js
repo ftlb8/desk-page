@@ -368,6 +368,7 @@
   }
 
   function closedHow(item) {
+    if (item.closed_by === "merged") return "Folded into the same item from another source";
     if (item.status === "dismissed") return "Dismissed";
     if (item.closed_by === "reply") return "You replied";
     if (item.closed_by === "reaction") return "You marked it with a check";
