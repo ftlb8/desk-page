@@ -6,6 +6,8 @@
   var cfg = window.DESK_CONFIG;
   var F = window.DeskFormat;
   var DOCS_NOTICES = "comments-noreply@docs.google.com";
+  var versionTag = document.querySelector('meta[name="desk-version"]');
+  var VERSION = versionTag ? versionTag.content : "?";
   var sb = window.supabase.createClient(cfg.url, cfg.key, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
   });
@@ -226,7 +228,7 @@
       var head = el("p", "comment-head", c.author);
       if (c.anchor) head.appendChild(el("span", "anchor", " on \u201c" + c.anchor + "\u201d"));
       one.appendChild(head);
-      c.text.split(/\n{2,}/).forEach(function (para) { one.appendChild(el("p", "para", para)); });
+      appendBlocks(one, F.emailBlocks(c.text));
       if (c.url) one.appendChild(linkTo(withAccount(c.url, item), "Open comment ↗", "chip"));
       box.appendChild(one);
     });
@@ -425,7 +427,7 @@
       // The owner can always see the two workspace rows; nobody else can see any.
       notice((results[2].data || []).length ? "" : "This sign-in does not have access to the Desk.");
       render();
-      $("updated").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      $("updated").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " · version " + VERSION;
     } catch (err) {
       notice("Could not load the Desk: " + (err && err.message ? err.message : "unknown error") + ". Retrying.");
     } finally {

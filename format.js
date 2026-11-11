@@ -180,7 +180,22 @@
       var anchor = null;
       if (rows.length && /^\| ?/.test(rows[0])) anchor = rows.shift().replace(/^\| ?/, "");
       var said = mentions(rows.join("\n").replace(/\n{3,}/g, "\n\n").trim(), String(myEmail || "").toLowerCase());
-      if (author && said) comments.push({ author: author, anchor: anchor, text: said, url: link ? safeUrl(link[1]) : null });
+      if (!author || !said) return;
+      // A thread lists each reply as a paragraph that starts with the person's name on its own line.
+      var url = link ? safeUrl(link[1]) : null;
+      var current = { author: author, anchor: anchor, text: "", url: null };
+      said.split(/\n{2,}/).forEach(function (para) {
+        var nl = para.indexOf("\n");
+        var head = nl > 0 ? para.slice(0, nl).trim() : "";
+        if (current.text && head && head.length <= 40 && /^[A-Z][A-Za-z\u00C0-\u024F'.-]*( [A-Z][A-Za-z\u00C0-\u024F'.-]*){1,3}$/.test(head)) {
+          comments.push(current);
+          current = { author: head, anchor: null, text: para.slice(nl + 1).trim(), url: null };
+        } else {
+          current.text += (current.text ? "\n\n" : "") + para;
+        }
+      });
+      current.url = url; // the link opens the whole thread; show it once, after the last reply
+      comments.push(current);
     });
     return { file: file, fileUrl: fileUrl, comments: comments };
   }

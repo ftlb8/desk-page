@@ -20,6 +20,10 @@ The backend (collector, database rules, agents) is in the private repository `ft
 | `config.js` | Project address and publishable key. |
 | `vendor/supabase-2.119.0.js` | The Supabase browser library, copied in unchanged from the npm package `@supabase/supabase-js` 2.119.0 so the page loads nothing from other sites. |
 
+## Releasing a change
+
+Raise the number in `index.html` (the `desk-version` tag and the `?v=` on each file) with every change. Browsers keep the old files for up to ten minutes otherwise. The page shows its version at the bottom.
+
 ## Rules
 
 - Anything that comes from a message is written to the page as text, never as HTML.
