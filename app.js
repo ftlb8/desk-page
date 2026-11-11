@@ -4,6 +4,8 @@
   "use strict";
 
   var cfg = window.DESK_CONFIG;
+  var F = window.DeskFormat;
+  var DOCS_NOTICES = "comments-noreply@docs.google.com";
   var sb = window.supabase.createClient(cfg.url, cfg.key, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
   });
@@ -65,23 +67,6 @@
     return sameDay ? "today " + time : d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) + " " + time;
   }
 
-  // Slack writes people as <@U123>, channels as <#C123|name> and links as <https://…|label>.
-  function plain(space, text) {
-    return String(text || "")
-      .replace(/<@([A-Z0-9]+)(\|[^>]*)?>/g, function (_m, id) {
-        var p = state.people[space + ":" + id];
-        return "@" + (p && p.name ? p.name : "someone");
-      })
-      .replace(/<#([A-Z0-9]+)(?:\|([^>]*))?>/g, function (_m, id, name) {
-        var c = state.channels[space + ":" + id];
-        return "#" + (name || (c && c.name) || "channel");
-      })
-      .replace(/<!(here|channel|everyone)(\|[^>]*)?>/g, "@$1")
-      .replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, "$2")
-      .replace(/<((?:https?|mailto):[^>]+)>/g, "$1")
-      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-  }
-
   function spaceLabel(id) {
     for (var i = 0; i < SPACES.length; i++) if (SPACES[i].id === id) return SPACES[i].label;
     return id;
@@ -91,16 +76,41 @@
     return !!item.messages && item.messages.source === "gmail";
   }
 
+  function isDocNotice(item) {
+    return isEmail(item) && item.messages.author_id === DOCS_NOTICES;
+  }
+
+  function myEmail(item) {
+    var account = state.accounts[item.space];
+    return account && account.email ? account.email : "";
+  }
+
+  // Sends a Google link to the right account when the browser is signed in to several.
+  function withAccount(url, item) {
+    var email = myEmail(item);
+    if (!url || !email) return url;
+    return url + (url.indexOf("?") >= 0 ? "&" : "?") + "authuser=" + encodeURIComponent(email);
+  }
+
+  function docNotice(item) {
+    if (!isDocNotice(item)) return null;
+    var doc = F.parseDocNotice(item.messages.subject, item.messages.body, myEmail(item));
+    return doc.comments.length ? doc : null;
+  }
+
   function authorLabel(item) {
     var m = item.messages || {};
-    if (isEmail(item)) return m.author_name || m.author_id || "Someone";
+    if (isEmail(item)) return String(m.author_name || m.author_id || "Someone").replace(/\s*\((Google [A-Za-z]+)\)\s*$/, "");
     var p = state.people[item.space + ":" + m.author_id];
     return (p && p.name ? p.name : "Someone") + (p && p.is_vip ? " ★" : "");
   }
 
   function whereLabel(item) {
     var m = item.messages || {};
-    if (isEmail(item)) return "Email";
+    if (isEmail(item)) {
+      var app = /\((Google [A-Za-z]+)\)\s*$/.exec(m.author_name || "");
+      return isDocNotice(item) && app ? app[1] + " comment" : "Email";
+    }
     if (m.channel_type === "im") return "Direct message";
     if (m.channel_type === "mpim") return "Group message";
     var c = state.channels[item.space + ":" + m.channel_id];
@@ -116,6 +126,8 @@
   }
 
   function sourceLink(item) {
+    var doc = docNotice(item);
+    if (doc && doc.fileUrl) return { href: withAccount(doc.fileUrl, item), label: "Open file" };
     if (isEmail(item)) {
       var g = gmailLink(item);
       return g ? { href: g, label: "Open in Gmail" } : null;
@@ -165,6 +177,95 @@
     return b;
   }
 
+  function linkTo(href, label, className) {
+    var a = el("a", className, label);
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    return a;
+  }
+
+  function appendTokens(parent, tokens) {
+    tokens.forEach(function (t) {
+      if (t.t === "link") {
+        var a = linkTo(t.href, (t.v || F.host(t.href)) + " ↗", "chip");
+        a.title = F.host(t.href);
+        parent.appendChild(a);
+      } else if (t.t === "bold") parent.appendChild(el("strong", null, t.v));
+      else if (t.t === "italic") parent.appendChild(el("em", null, t.v));
+      else if (t.t === "code") parent.appendChild(el("code", null, t.v));
+      else if (t.t === "mention") parent.appendChild(el("span", "mention", t.v));
+      else parent.appendChild(document.createTextNode(t.v));
+    });
+  }
+
+  function appendBlocks(parent, blocks) {
+    blocks.forEach(function (lines) {
+      var p = el("p", "para");
+      lines.forEach(function (tokens, i) {
+        if (i) p.appendChild(document.createElement("br"));
+        if (tokens.quote) {
+          var q = el("span", "quoted");
+          appendTokens(q, tokens);
+          p.appendChild(q);
+        } else {
+          appendTokens(p, tokens);
+        }
+      });
+      parent.appendChild(p);
+    });
+  }
+
+  // A Google Docs, Sheets or Slides notice: the file, each comment, and a link to it. Nothing else.
+  function docView(item, doc) {
+    var box = el("div", "doc");
+    box.appendChild(el("p", "file", doc.file));
+    doc.comments.forEach(function (c) {
+      var one = el("div", "comment");
+      var head = el("p", "comment-head", c.author);
+      if (c.anchor) head.appendChild(el("span", "anchor", " on \u201c" + c.anchor + "\u201d"));
+      one.appendChild(head);
+      c.text.split(/\n{2,}/).forEach(function (para) { one.appendChild(el("p", "para", para)); });
+      if (c.url) one.appendChild(linkTo(withAccount(c.url, item), "Open comment ↗", "chip"));
+      box.appendChild(one);
+    });
+    return box;
+  }
+
+  // The message itself, cleaned up, behind a fold. Emails lose quoted history, signature and footer;
+  // "Show everything" brings the full text back.
+  function originalView(item) {
+    var m = item.messages;
+    var more = el("details", "message");
+    more.appendChild(el("summary", null, isEmail(item) ? "Original email" : "Original message"));
+    var body = el("div", "body");
+    if (!isEmail(item)) {
+      appendBlocks(body, F.slackBlocks(m.body, {
+        me: (state.accounts[item.space] || {}).slack_user_id || "",
+        person: function (id) { var p = state.people[item.space + ":" + id]; return p && p.name ? p.name : null; },
+        channel: function (id) { var c = state.channels[item.space + ":" + id]; return c && c.name ? c.name : null; },
+      }));
+      more.appendChild(body);
+      return more;
+    }
+    if (m.subject) more.appendChild(el("p", "subject", m.subject));
+    var cleaned = F.cleanEmail(m.body);
+    appendBlocks(body, F.emailBlocks(cleaned.text));
+    more.appendChild(body);
+    if (cleaned.cut) {
+      var full = el("p", "body raw", cleaned.full);
+      full.hidden = true;
+      var toggle = button("Show everything", "quiet", function () {
+        full.hidden = !full.hidden;
+        body.hidden = !full.hidden;
+        toggle.textContent = full.hidden ? "Show everything" : "Show the short version";
+      });
+      more.appendChild(full);
+      more.appendChild(toggle);
+    }
+    return more;
+  }
+
   function closedHow(item) {
     if (item.status === "dismissed") return "Dismissed";
     if (item.closed_by === "reply") return "You replied";
@@ -190,26 +291,19 @@
       node.appendChild(el("p", "reason", closedHow(item) + " · " + ago(item.closed_at)));
     } else if (kind === "later") {
       node.appendChild(el("p", "reason", "Back " + until(item.snooze_until)));
-    } else if (item.reason) {
+    } else if (!item.summary && item.reason) {
       node.appendChild(el("p", "reason", item.reason));
     }
+    if (item.summary) node.appendChild(el("p", "gist", item.summary));
 
-    if (m.body) {
-      var more = el("details", "message");
-      more.appendChild(el("summary", null, isEmail(item) ? "Email" : "Message"));
-      if (isEmail(item) && m.subject) more.appendChild(el("p", "subject", m.subject));
-      more.appendChild(el("p", "body", isEmail(item) ? m.body : plain(item.space, m.body)));
-      node.appendChild(more);
-    }
+    var doc = docNotice(item);
+    if (doc) node.appendChild(docView(item, doc));
+    else if (m.body) node.appendChild(originalView(item));
 
     var actions = el("div", "actions");
     var link = sourceLink(item);
     if (link) {
-      var a = el("a", "btn", link.label);
-      a.href = link.href;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      actions.appendChild(a);
+      actions.appendChild(linkTo(link.href, link.label, "btn"));
     }
     if (kind === "waiting" || kind === "look") {
       actions.appendChild(button("Done", "btn", function () { act(item.id, "done"); }));
@@ -310,13 +404,13 @@
       var since = new Date(Date.now() - DAY).toISOString();
       var results = await Promise.all([
         sb.from("items")
-          .select("id, space, lane, status, title, reason, urgency, created_at, closed_at, closed_by, snooze_until, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
+          .select("id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
           .or('status.in.(open,snoozed),closed_at.gte."' + since + '"')
           .order("created_at", { ascending: false })
           .limit(500),
         sb.from("people").select("space, slack_user_id, name, is_vip").limit(5000),
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
-        sb.from("accounts").select("space, slack_url, email"),
+        sb.from("accounts").select("space, slack_url, slack_user_id, email"),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);

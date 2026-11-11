@@ -15,6 +15,7 @@ The backend (collector, database rules, agents) is in the private repository `ft
 | --- | --- |
 | `index.html` | The page. Its content security policy only allows its own files and the Desk's Supabase project. |
 | `app.js` | Sign-in, the two lanes (Waiting on you, Worth a look), Later, recently closed, live updates. |
+| `format.js` | Makes message text readable: drops quoted history, signatures and mailing footers from email, turns long links into short labels, reads Google Docs comment notices into file, comments and link, and renders Slack formatting. Returns plain data; never HTML. |
 | `style.css` | Styling, light and dark. |
 | `config.js` | Project address and publishable key. |
 | `vendor/supabase-2.119.0.js` | The Supabase browser library, copied in unchanged from the npm package `@supabase/supabase-js` 2.119.0 so the page loads nothing from other sites. |
