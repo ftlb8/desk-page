@@ -647,6 +647,11 @@
   }
 
   async function saveTask(id, changes) {
+    var task = state.tasks.filter(function (t) { return t.id === id; })[0];
+    if (task) {
+      Object.keys(changes).forEach(function (k) { task[k] = changes[k]; });
+      render();
+    }
     var res = await sb.from("tasks").update(changes).eq("id", id);
     if (res.error) notice("That did not save: " + res.error.message);
     await load();
@@ -911,7 +916,9 @@
   }
 
   async function load() {
-    if (state.loading) return;
+    // A request that arrives while a load is running is not dropped: it runs right after,
+    // so the page never settles on data fetched before the latest change.
+    if (state.loading) { state.loadAgain = true; return; }
     state.loading = true;
     try {
       var since = new Date(Date.now() - DAY).toISOString();
@@ -950,6 +957,10 @@
       notice("Could not load the Desk: " + (err && err.message ? err.message : "unknown error") + ". Retrying.");
     } finally {
       state.loading = false;
+      if (state.loadAgain) {
+        state.loadAgain = false;
+        load();
+      }
     }
   }
 
@@ -979,6 +990,25 @@
   }
 
   async function act(id, action, at) {
+    // Show the change at once; the save and the fresh data follow.
+    var item = state.items.filter(function (i) { return i.id === id; })[0];
+    if (item) {
+      if (action === "done" || action === "dismiss") {
+        item.status = action === "done" ? "done" : "dismissed";
+        item.closed_by = "user";
+        item.closed_at = new Date().toISOString();
+        item.snooze_until = null;
+      } else if (action === "snooze") {
+        item.status = "snoozed";
+        item.snooze_until = at;
+      } else if (action === "reopen") {
+        item.status = "open";
+        item.closed_by = null;
+        item.closed_at = null;
+        item.snooze_until = null;
+      }
+      render();
+    }
     var res = await sb.rpc("set_item_state", { p_item: id, p_action: action, p_until: at || null });
     if (res.error) notice("That did not save: " + res.error.message);
     await load();
