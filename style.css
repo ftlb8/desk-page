@@ -208,3 +208,8 @@ details#box-tasks-done > summary { font-size: 0.85rem; margin-bottom: 8px; }
 .ref { border: 0; background: none; padding: 0; text-align: left; color: var(--accent); font-size: 0.92rem; }
 .ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .closed-ref { color: var(--muted); font-size: 0.92rem; }
+.theme { margin: 16px 0 2px; font-size: 0.9rem; font-weight: 650; }
+.theme:first-child { margin-top: 0; }
+details#box-decisions { margin-top: 24px; }
+details#box-decisions > summary { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 650; margin-bottom: 10px; }
+.card-top .kind { font-size: 0.72rem; }

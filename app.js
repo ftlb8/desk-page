@@ -137,7 +137,15 @@
     return "https://mail.google.com/mail/?authuser=" + encodeURIComponent(account.email) + "#all/" + m.channel_id;
   }
 
+  function fromNotes(item) {
+    return item.origin === "notes";
+  }
+
   function sourceLink(item) {
+    if (fromNotes(item)) {
+      var href = item.source_url ? F.safeUrl(item.source_url) : null;
+      return href ? { href: href, label: "Open notes" } : null;
+    }
     var doc = docNotice(item);
     if (doc && doc.fileUrl) return { href: withAccount(doc.fileUrl, item), label: "Open file" };
     if (isEmail(item)) {
@@ -165,7 +173,7 @@
   // ---------- Which list an item belongs to ----------
 
   function bucket(item) {
-    var home = item.lane === "waiting" ? "waiting" : item.lane === "commitment" ? "commit" : "look";
+    var home = item.lane === "waiting" ? "waiting" : item.lane === "commitment" ? (item.kind === "decision" ? "decision" : "commit") : "look";
     if (item.status === "open") return home;
     if (item.status === "snoozed") {
       if (item.snooze_until && new Date(item.snooze_until).getTime() > Date.now()) return "later";
@@ -316,7 +324,15 @@
     } else if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
       top.appendChild(el("span", "flag flag-" + item.urgency, item.urgency === 3 ? "Today" : "Soon"));
     }
-    var meta = (promise ? "To " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
+    var meta;
+    if (fromNotes(item)) {
+      var KINDS = { promise: "Promise", todo: "To-do", decision: "Decision" };
+      top.appendChild(el("span", "kind", KINDS[item.kind] || "To-do"));
+      var met = item.meeting_on ? new Date(item.meeting_on + "T12:00:00").toLocaleDateString([], { day: "numeric", month: "short" }) : null;
+      meta = (item.kind === "promise" && item.owed_to ? "To " + item.owed_to + " · " : "") + (item.source_label || "Meeting notes") + (met ? " · meeting of " + met : "");
+    } else {
+      meta = (promise ? "To " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
+    }
     top.appendChild(el("span", "meta", meta));
     node.appendChild(top);
 
@@ -331,7 +347,14 @@
     if (item.summary) node.appendChild(el("p", "gist", item.summary));
 
     var doc = docNotice(item);
-    if (doc) node.appendChild(docView(item, doc));
+    if (fromNotes(item)) {
+      if (item.quote) {
+        var said = el("details", "message");
+        said.appendChild(el("summary", null, "From the notes"));
+        said.appendChild(el("p", "body", item.quote));
+        node.appendChild(said);
+      }
+    } else if (doc) node.appendChild(docView(item, doc));
     else if (m.body) node.appendChild(originalView(item));
 
     var actions = el("div", "actions");
@@ -339,7 +362,10 @@
     if (link) {
       actions.appendChild(linkTo(link.href, link.label, "btn"));
     }
-    if (kind === "waiting" || kind === "look" || kind === "commit") {
+    if (kind === "decision") {
+      actions.appendChild(button("Noted", "btn", function () { act(item.id, "done"); }));
+      actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
+    } else if (kind === "waiting" || kind === "look" || kind === "commit") {
       actions.appendChild(button("Done", "btn", function () { act(item.id, "done"); }));
       var later = el("span", "later");
       later.appendChild(button("Later", "btn", function () { later.classList.toggle("open"); }));
@@ -384,8 +410,35 @@
     items.forEach(function (item) { list.appendChild(card(item, kind)); });
   }
 
+  // Commitments are shown under the project or theme they belong to.
+  function fillByTheme(listId, countId, items, kind, emptyText) {
+    var list = $(listId);
+    list.textContent = "";
+    $(countId).textContent = items.length ? String(items.length) : "";
+    if (!items.length) {
+      if (emptyText) list.appendChild(el("p", "empty", emptyText));
+      return;
+    }
+    var themes = {};
+    var order = [];
+    items.forEach(function (item) {
+      var name = (item.theme || "").trim() || "Other";
+      var key = name.toLowerCase();
+      if (!themes[key]) { themes[key] = { name: name, items: [] }; order.push(key); }
+      themes[key].items.push(item);
+    });
+    order.sort(function (a, b) {
+      if ((a === "other") !== (b === "other")) return a === "other" ? 1 : -1;
+      return themes[b].items.length - themes[a].items.length || (a < b ? -1 : 1);
+    });
+    order.forEach(function (key) {
+      list.appendChild(el("h3", "theme", themes[key].name + " · " + themes[key].items.length));
+      themes[key].items.forEach(function (item) { list.appendChild(card(item, kind)); });
+    });
+  }
+
   function render() {
-    var groups = { waiting: [], commit: [], look: [], later: [], closed: [] };
+    var groups = { waiting: [], commit: [], decision: [], look: [], later: [], closed: [] };
     var waitingBySpace = {};
     state.items.forEach(function (item) {
       var b = bucket(item);
@@ -409,7 +462,9 @@
     groups.closed.sort(function (a, b) { return a.closed_at > b.closed_at ? -1 : 1; });
 
     fill("list-waiting", "n-waiting", groups.waiting, "waiting", "Nothing is waiting on you.");
-    fill("list-commit", "n-commit", groups.commit, "commit", "No open promises to Leonard, Ryan or Cole.");
+    fillByTheme("list-commit", "n-commit", groups.commit, "commit", "No open promises or to-dos.");
+    fillByTheme("list-decisions", "n-decisions", groups.decision, "decision", null);
+    $("box-decisions").hidden = state.view !== "commitments" || !groups.decision.length;
     fill("list-look", "n-look", groups.look, "look", "Nothing else to look at.");
     renderTasks();
     fill("list-later", "n-later", groups.later, "later", null);
@@ -862,7 +917,7 @@
       var since = new Date(Date.now() - DAY).toISOString();
       var results = await Promise.all([
         sb.from("items")
-          .select("id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
+          .select("id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
           .or('status.in.(open,snoozed),closed_at.gte."' + since + '"')
           .order("created_at", { ascending: false })
           .limit(500),
