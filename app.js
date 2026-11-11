@@ -22,6 +22,8 @@
 
   var state = {
     items: [],
+    tasks: [],
+    projects: [],
     people: {},   // "space:userId" -> { name, is_vip }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
@@ -155,10 +157,11 @@
   // ---------- Which list an item belongs to ----------
 
   function bucket(item) {
-    if (item.status === "open") return item.lane === "waiting" ? "waiting" : "look";
+    var home = item.lane === "waiting" ? "waiting" : item.lane === "commitment" ? "commit" : "look";
+    if (item.status === "open") return home;
     if (item.status === "snoozed") {
       if (item.snooze_until && new Date(item.snooze_until).getTime() > Date.now()) return "later";
-      return item.lane === "waiting" ? "waiting" : "look"; // its time has come
+      return home; // its time has come
     }
     return "closed";
   }
@@ -240,7 +243,7 @@
   function originalView(item) {
     var m = item.messages;
     var more = el("details", "message");
-    more.appendChild(el("summary", null, isEmail(item) ? "Original email" : "Original message"));
+    more.appendChild(el("summary", null, item.lane === "commitment" ? "What you wrote" : isEmail(item) ? "Original email" : "Original message"));
     var body = el("div", "body");
     if (!isEmail(item)) {
       appendBlocks(body, F.slackBlocks(m.body, {
@@ -269,6 +272,22 @@
     return more;
   }
 
+  function dueLabel(day) {
+    if (!day) return null;
+    var due = new Date(day + "T12:00:00");
+    var today = new Date(); today.setHours(12, 0, 0, 0);
+    var days = Math.round((due.getTime() - today.getTime()) / DAY);
+    if (days < 0) return { text: "Overdue since " + due.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }), late: true };
+    if (days === 0) return { text: "Due today", late: true };
+    if (days === 1) return { text: "Due tomorrow", late: false };
+    return { text: "Due " + due.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }), late: false };
+  }
+
+  function taskFor(item) {
+    for (var i = 0; i < state.tasks.length; i++) if (state.tasks[i].source_item_id === item.id) return state.tasks[i];
+    return null;
+  }
+
   function closedHow(item) {
     if (item.status === "dismissed") return "Dismissed";
     if (item.closed_by === "reply") return "You replied";
@@ -282,10 +301,14 @@
 
     var top = el("div", "card-top");
     top.appendChild(el("span", "tag tag-" + item.space, spaceLabel(item.space)));
-    if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
+    var promise = item.lane === "commitment";
+    var due = promise ? dueLabel(item.due_on) : null;
+    if (due && kind !== "closed") {
+      top.appendChild(el("span", "flag flag-" + (due.late ? 3 : 2), due.text));
+    } else if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
       top.appendChild(el("span", "flag flag-" + item.urgency, item.urgency === 3 ? "Today" : "Soon"));
     }
-    var meta = authorLabel(item) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
+    var meta = (promise ? "To " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
     top.appendChild(el("span", "meta", meta));
     node.appendChild(top);
 
@@ -294,7 +317,7 @@
       node.appendChild(el("p", "reason", closedHow(item) + " · " + ago(item.closed_at)));
     } else if (kind === "later") {
       node.appendChild(el("p", "reason", "Back " + until(item.snooze_until)));
-    } else if (!item.summary && item.reason) {
+    } else if (!item.summary && item.reason && !promise) {
       node.appendChild(el("p", "reason", item.reason));
     }
     if (item.summary) node.appendChild(el("p", "gist", item.summary));
@@ -308,7 +331,7 @@
     if (link) {
       actions.appendChild(linkTo(link.href, link.label, "btn"));
     }
-    if (kind === "waiting" || kind === "look") {
+    if (kind === "waiting" || kind === "look" || kind === "commit") {
       actions.appendChild(button("Done", "btn", function () { act(item.id, "done"); }));
       var later = el("span", "later");
       later.appendChild(button("Later", "btn", function () { later.classList.toggle("open"); }));
@@ -318,6 +341,11 @@
       });
       later.appendChild(choices);
       actions.appendChild(later);
+      if (taskFor(item)) {
+        actions.appendChild(el("span", "made", "In your tasks"));
+      } else {
+        actions.appendChild(button("Make a task", "btn subtle", function () { taskFromItem(item); }));
+      }
       actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
     } else {
       actions.appendChild(button("Reopen", "btn", function () { act(item.id, "reopen"); }));
@@ -348,7 +376,7 @@
   }
 
   function render() {
-    var groups = { waiting: [], look: [], later: [], closed: [] };
+    var groups = { waiting: [], commit: [], look: [], later: [], closed: [] };
     var waitingBySpace = {};
     state.items.forEach(function (item) {
       var b = bucket(item);
@@ -358,11 +386,18 @@
     });
     groups.waiting.sort(byPriority);
     groups.look.sort(byPriority);
+    groups.commit.sort(function (a, b) {
+      if (a.due_on && b.due_on && a.due_on !== b.due_on) return a.due_on < b.due_on ? -1 : 1;
+      if (a.due_on !== b.due_on) return a.due_on ? -1 : 1; // dated promises first
+      return byPriority(a, b);
+    });
     groups.later.sort(function (a, b) { return a.snooze_until < b.snooze_until ? -1 : 1; });
     groups.closed.sort(function (a, b) { return a.closed_at > b.closed_at ? -1 : 1; });
 
     fill("list-waiting", "n-waiting", groups.waiting, "waiting", "Nothing is waiting on you.");
+    fill("list-commit", "n-commit", groups.commit, "commit", "No open promises to Leonard, Ryan or Cole.");
     fill("list-look", "n-look", groups.look, "look", "Nothing else to look at.");
+    renderTasks();
     fill("list-later", "n-later", groups.later, "later", null);
     fill("list-closed", "n-closed", groups.closed, "closed", null);
     $("box-later").hidden = !groups.later.length;
@@ -384,6 +419,130 @@
       b.setAttribute("aria-pressed", state.filter === s.id ? "true" : "false");
       nav.appendChild(b);
     });
+  }
+
+  // ---------- Tasks ----------
+
+  var HORIZONS = [
+    { id: "today", label: "Today" },
+    { id: "week", label: "This week" },
+    { id: "later", label: "Later" },
+  ];
+
+  function projectName(task) {
+    return task.projects && task.projects.name ? task.projects.name : null;
+  }
+
+  function taskRow(task) {
+    var row = el("div", "task" + (task.status === "done" ? " is-done" : ""));
+    var tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.checked = task.status === "done";
+    tick.setAttribute("aria-label", task.status === "done" ? "Reopen task" : "Mark task done");
+    tick.addEventListener("change", function () {
+      saveTask(task.id, tick.checked ? { status: "done", done_at: new Date().toISOString() } : { status: "open", done_at: null });
+    });
+    row.appendChild(tick);
+
+    var main = el("div", "task-main");
+    main.appendChild(el("span", "task-title", task.title));
+    var tags = el("span", "task-tags");
+    tags.appendChild(el("span", "tag tag-" + task.space, spaceLabel(task.space)));
+    if (projectName(task)) tags.appendChild(el("span", "project", projectName(task)));
+    var due = dueLabel(task.due_on);
+    if (due && task.status === "open") tags.appendChild(el("span", "flag flag-" + (due.late ? 3 : 2), due.text));
+    main.appendChild(tags);
+    row.appendChild(main);
+
+    if (task.status === "open") {
+      var when = document.createElement("select");
+      when.className = "task-when";
+      when.setAttribute("aria-label", "Move task");
+      HORIZONS.forEach(function (h) {
+        var o = el("option", null, h.label);
+        o.value = h.id;
+        o.selected = task.horizon === h.id;
+        when.appendChild(o);
+      });
+      when.addEventListener("change", function () { saveTask(task.id, { horizon: when.value }); });
+      row.appendChild(when);
+      var drop = button("Drop", "quiet", function () { saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() }); });
+      row.appendChild(drop);
+    }
+    return row;
+  }
+
+  function renderTasks() {
+    var list = $("list-tasks");
+    list.textContent = "";
+    var mine = state.tasks.filter(function (t) { return state.filter === "all" || t.space === state.filter; });
+    var open = mine.filter(function (t) { return t.status === "open"; });
+    $("n-tasks").textContent = open.length ? String(open.length) : "";
+    HORIZONS.forEach(function (h) {
+      var rows = open.filter(function (t) { return t.horizon === h.id; });
+      if (!rows.length) return;
+      list.appendChild(el("h3", "horizon", h.label));
+      rows.forEach(function (t) { list.appendChild(taskRow(t)); });
+    });
+    if (!open.length) list.appendChild(el("p", "empty", "No open tasks."));
+
+    var done = mine.filter(function (t) { return t.status === "done"; });
+    var doneList = $("list-tasks-done");
+    doneList.textContent = "";
+    done.forEach(function (t) { doneList.appendChild(taskRow(t)); });
+    $("n-tasks-done").textContent = done.length ? String(done.length) : "";
+    $("box-tasks-done").hidden = !done.length;
+  }
+
+  function fillProjectChoices() {
+    var space = $("task-space").value;
+    var box = $("project-names");
+    box.textContent = "";
+    state.projects.forEach(function (p) {
+      if (p.space !== space) return;
+      var o = document.createElement("option");
+      o.value = p.name;
+      box.appendChild(o);
+    });
+  }
+
+  async function saveTask(id, changes) {
+    var res = await sb.from("tasks").update(changes).eq("id", id);
+    if (res.error) notice("That did not save: " + res.error.message);
+    await load();
+  }
+
+  // Finds the project by name in that organisation, or creates it.
+  async function projectId(space, name) {
+    var wanted = name.trim();
+    if (!wanted) return null;
+    for (var i = 0; i < state.projects.length; i++) {
+      var p = state.projects[i];
+      if (p.space === space && p.name.toLowerCase() === wanted.toLowerCase()) return p.id;
+    }
+    var made = await sb.from("projects").insert({ space: space, name: wanted }).select("id").single();
+    if (made.error) throw new Error(made.error.message);
+    return made.data.id;
+  }
+
+  async function addTask(fields) {
+    try {
+      var row = { space: fields.space, title: fields.title.trim(), horizon: fields.horizon || "week" };
+      if (fields.source_item_id) row.source_item_id = fields.source_item_id;
+      if (fields.due_on) row.due_on = fields.due_on;
+      row.project_id = await projectId(fields.space, fields.project || "");
+      var res = await sb.from("tasks").insert(row);
+      if (res.error) throw new Error(res.error.message);
+    } catch (err) {
+      notice("The task was not saved: " + (err && err.message ? err.message : "unknown error"));
+      return false;
+    }
+    await load();
+    return true;
+  }
+
+  function taskFromItem(item) {
+    addTask({ space: item.space, title: item.title, horizon: "week", source_item_id: item.id, due_on: item.due_on || null });
   }
 
   function notice(text) {
@@ -413,12 +572,21 @@
           .limit(500),
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
         sb.from("accounts").select("space, slack_url, slack_user_id, email"),
+        sb.from("tasks")
+          .select("id, space, project_id, title, horizon, status, due_on, source_item_id, created_at, done_at, projects(name)")
+          .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
+          .order("created_at", { ascending: true })
+          .limit(1000),
+        sb.from("projects").select("id, space, name").eq("status", "active").order("name").limit(1000),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
 
       state.channels = index(results[1].data, function (c) { return c.space + ":" + c.slack_channel_id; });
       state.accounts = index(results[2].data, function (a) { return a.space; });
+      state.tasks = results[3].data || [];
+      state.projects = results[4].data || [];
+      fillProjectChoices();
       var items = results[0].data || [];
       state.people = await loadPeople(items);
       announceNew(items);
@@ -478,6 +646,7 @@
     if (state.channel) sb.removeChannel(state.channel);
     state.channel = sb.channel("desk-items")
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, reloadSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }
         else setLive("Reconnecting", false);
@@ -534,6 +703,20 @@
   });
 
   $("signout").addEventListener("click", function () { sb.auth.signOut(); });
+
+  $("task-space").value = readPref("desk.task-space", state.filter !== "all" ? state.filter : "metaculus");
+  $("task-space").addEventListener("change", function () {
+    writePref("desk.task-space", $("task-space").value);
+    $("task-project").value = "";
+    fillProjectChoices();
+  });
+  $("task-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    var title = $("task-title").value;
+    if (!title.trim()) return;
+    var saved = await addTask({ space: $("task-space").value, title: title, project: $("task-project").value, horizon: $("task-horizon").value });
+    if (saved) $("task-title").value = "";
+  });
 
   $("alerts").addEventListener("click", function () {
     Notification.requestPermission().then(refreshAlertsButton);

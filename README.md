@@ -14,7 +14,7 @@ The backend (collector, database rules, agents) is in the private repository `ft
 | File | What it is |
 | --- | --- |
 | `index.html` | The page. Its content security policy only allows its own files and the Desk's Supabase project. |
-| `app.js` | Sign-in, the two lanes (Waiting on you, Worth a look), Later, recently closed, live updates. |
+| `app.js` | Sign-in; Waiting on you, Commitments, Tasks (with projects), Worth a look, Later, recently closed; live updates. |
 | `format.js` | Makes message text readable: drops quoted history, signatures and mailing footers from email, turns long links into short labels, reads Google Docs comment notices into file, comments and link, and renders Slack formatting. Returns plain data; never HTML. |
 | `style.css` | Styling, light and dark. |
 | `config.js` | Project address and publishable key. |

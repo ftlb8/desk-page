@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="6">
+  <meta name="desk-version" content="7">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -46,6 +46,36 @@
         <div id="list-waiting" class="list"></div>
       </section>
 
+      <section aria-labelledby="h-commit">
+        <h2 id="h-commit">Commitments <span id="n-commit" class="count"></span></h2>
+        <div id="list-commit" class="list"></div>
+      </section>
+
+      <section aria-labelledby="h-tasks">
+        <h2 id="h-tasks">Tasks <span id="n-tasks" class="count"></span></h2>
+        <form id="task-form" class="task-form" autocomplete="off">
+          <input id="task-title" type="text" placeholder="Add a task" maxlength="300" required aria-label="Task">
+          <select id="task-space" aria-label="Organisation">
+            <option value="metaculus">Metaculus</option>
+            <option value="cea">CEA</option>
+            <option value="personal">Personal</option>
+          </select>
+          <input id="task-project" type="text" list="project-names" placeholder="Project (optional)" maxlength="80" aria-label="Project">
+          <datalist id="project-names"></datalist>
+          <select id="task-horizon" aria-label="When">
+            <option value="today">Today</option>
+            <option value="week" selected>This week</option>
+            <option value="later">Later</option>
+          </select>
+          <button type="submit" class="btn">Add</button>
+        </form>
+        <div id="list-tasks"></div>
+        <details id="box-tasks-done">
+          <summary>Done in the last 24 hours <span id="n-tasks-done" class="count"></span></summary>
+          <div id="list-tasks-done"></div>
+        </details>
+      </section>
+
       <section aria-labelledby="h-look">
         <h2 id="h-look">Worth a look <span id="n-look" class="count"></span></h2>
         <div id="list-look" class="list"></div>
@@ -65,9 +95,9 @@
     <footer id="updated" class="updated"></footer>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=6"></script>
-  <script src="config.js?v=6"></script>
-  <script src="format.js?v=6"></script>
-  <script src="app.js?v=6"></script>
+  <script src="vendor/supabase-2.119.0.js?v=7"></script>
+  <script src="config.js?v=7"></script>
+  <script src="format.js?v=7"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>
