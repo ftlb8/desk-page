@@ -218,7 +218,8 @@
 
   // A Google Docs, Sheets or Slides notice: the file, each comment, and a link to it. Nothing else.
   function docView(item, doc) {
-    var box = el("div", "doc");
+    var box = el("details", "message doc");
+    box.appendChild(el("summary", null, doc.comments.length === 1 ? "1 comment" : doc.comments.length + " comments"));
     box.appendChild(el("p", "file", doc.file));
     doc.comments.forEach(function (c) {
       var one = el("div", "comment");
@@ -408,22 +409,21 @@
           .or('status.in.(open,snoozed),closed_at.gte."' + since + '"')
           .order("created_at", { ascending: false })
           .limit(500),
-        sb.from("people").select("space, slack_user_id, name, is_vip").limit(5000),
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
         sb.from("accounts").select("space, slack_url, slack_user_id, email"),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
 
-      state.people = index(results[1].data, function (p) { return p.space + ":" + p.slack_user_id; });
-      state.channels = index(results[2].data, function (c) { return c.space + ":" + c.slack_channel_id; });
-      state.accounts = index(results[3].data, function (a) { return a.space; });
+      state.channels = index(results[1].data, function (c) { return c.space + ":" + c.slack_channel_id; });
+      state.accounts = index(results[2].data, function (a) { return a.space; });
       var items = results[0].data || [];
+      state.people = await loadPeople(items);
       announceNew(items);
       state.items = items;
 
       // The owner can always see the two workspace rows; nobody else can see any.
-      notice((results[3].data || []).length ? "" : "This sign-in does not have access to the Desk.");
+      notice((results[2].data || []).length ? "" : "This sign-in does not have access to the Desk.");
       render();
       $("updated").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     } catch (err) {
@@ -431,6 +431,26 @@
     } finally {
       state.loading = false;
     }
+  }
+
+  // Names for the authors and for everyone mentioned in the Slack messages on the page.
+  async function loadPeople(items) {
+    var ids = {};
+    items.forEach(function (item) {
+      var m = item.messages || {};
+      if (m.source === "gmail") return;
+      if (m.author_id) ids[m.author_id] = true;
+      var re = /<@([A-Z0-9]+)/g, hit;
+      while ((hit = re.exec(String(m.body || "")))) ids[hit[1]] = true;
+    });
+    var list = Object.keys(ids);
+    var out = {};
+    for (var i = 0; i < list.length; i += 150) {
+      var res = await sb.from("people").select("space, slack_user_id, name, is_vip").in("slack_user_id", list.slice(i, i + 150));
+      if (res.error) throw new Error(res.error.message);
+      (res.data || []).forEach(function (p) { out[p.space + ":" + p.slack_user_id] = p; });
+    }
+    return out;
   }
 
   function reloadSoon() {
