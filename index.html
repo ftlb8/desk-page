@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
+  <title>Desk</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="signin" class="signin" hidden>
+    <h1>Desk</h1>
+    <form id="signin-form" autocomplete="on">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="primary">Sign in</button>
+      <p id="signin-error" class="error" role="alert" hidden></p>
+    </form>
+  </main>
+
+  <div id="app" hidden>
+    <header class="bar">
+      <h1>Desk</h1>
+      <nav id="filters" class="filters" aria-label="Organisation"></nav>
+      <div class="bar-right">
+        <span id="live" class="live" title="Connection to the Desk">Connecting</span>
+        <button id="alerts" type="button" class="quiet" hidden>Turn on alerts</button>
+        <button id="signout" type="button" class="quiet">Sign out</button>
+      </div>
+    </header>
+
+    <p id="notice" class="notice" role="status" hidden></p>
+
+    <main>
+      <section aria-labelledby="h-waiting">
+        <h2 id="h-waiting">Waiting on you <span id="n-waiting" class="count"></span></h2>
+        <div id="list-waiting" class="list"></div>
+      </section>
+
+      <section aria-labelledby="h-look">
+        <h2 id="h-look">Worth a look <span id="n-look" class="count"></span></h2>
+        <div id="list-look" class="list"></div>
+      </section>
+
+      <details id="box-later">
+        <summary>Later <span id="n-later" class="count"></span></summary>
+        <div id="list-later" class="list"></div>
+      </details>
+
+      <details id="box-closed">
+        <summary>Closed in the last 24 hours <span id="n-closed" class="count"></span></summary>
+        <div id="list-closed" class="list"></div>
+      </details>
+    </main>
+
+    <footer id="updated" class="updated"></footer>
+  </div>
+
+  <script src="vendor/supabase-2.119.0.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
