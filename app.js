@@ -22,18 +22,20 @@
     { id: "inbox", label: "Inbox" },
     { id: "commitments", label: "Commitments" },
     { id: "tasks", label: "Tasks" },
+    { id: "meetings", label: "Meetings" },
   ];
   var DAY = 24 * 60 * 60 * 1000;
 
   var state = {
     items: [],
     tasks: [],
+    meetings: [],
     projects: [],
     people: {},   // "space:userId" -> { name, is_vip }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
-    view: readPref("desk.view", "inbox"), // inbox | commitments | tasks
+    view: readPref("desk.view", "inbox"), // inbox | commitments | tasks | meetings
     taskMode: readPref("desk.task-mode", "list"), // list | days
     project: null, // show only this project's tasks
     seen: null,   // ids already shown, to tell which waiting items are new
@@ -549,14 +551,15 @@
     document.querySelectorAll("[data-view]").forEach(function (section) {
       section.hidden = section.getAttribute("data-view") !== state.view;
     });
-    var lists = state.view !== "tasks";
+    renderMeetings();
+    var lists = state.view === "inbox" || state.view === "commitments";
     $("box-later").hidden = !lists || !groups.later.length;
     $("box-closed").hidden = !lists || !groups.closed.length;
 
     var openTasks = state.tasks.filter(function (t) {
       return t.status === "open" && (state.filter === "all" || t.space === state.filter);
     }).length;
-    var counts = { inbox: groups.waiting.length, commitments: groups.commit.length, tasks: openTasks };
+    var counts = { inbox: groups.waiting.length, commitments: groups.commit.length, tasks: openTasks, meetings: meetingsLeftToday() };
     var views = $("views");
     views.textContent = "";
     VIEWS.forEach(function (v) {
@@ -585,6 +588,199 @@
       });
       b.setAttribute("aria-pressed", state.filter === s.id ? "true" : "false");
       nav.appendChild(b);
+    });
+  }
+
+  // ---------- Meetings ----------
+
+  var RESPONSES = { needsAction: "Not answered", tentative: "Maybe" };
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function clock(d) { return pad2(d.getHours()) + ":" + pad2(d.getMinutes()); }
+
+  // An all-day event is stored at noon UTC on its date; the date shown is that UTC date.
+  function meetingDate(m) {
+    var d = new Date(m.starts_at);
+    if (m.all_day) return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    return d;
+  }
+
+  function meetingEnd(m) {
+    return new Date(m.ends_at || m.starts_at);
+  }
+
+  function meetingEnded(m, now) {
+    return !m.all_day && meetingEnd(m).getTime() <= now;
+  }
+
+  function shownMeetings() {
+    return state.meetings.filter(function (m) {
+      return m.status !== "cancelled" && m.my_response !== "declined" && (state.filter === "all" || m.space === state.filter);
+    });
+  }
+
+  function dayStart(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  }
+
+  // Timed meetings of today that have not finished yet.
+  function meetingsLeftToday() {
+    var now = Date.now();
+    var today = dayStart(new Date());
+    return shownMeetings().filter(function (m) {
+      return !m.all_day && dayStart(meetingDate(m)) === today && !meetingEnded(m, now);
+    }).length;
+  }
+
+  function personName(a) {
+    var name = String(a.name || "").trim();
+    if (name) return name;
+    var email = String(a.email || "").trim();
+    return email ? email.split("@")[0] : "";
+  }
+
+  function httpsLink(url) {
+    var href = url ? F.safeUrl(url) : null;
+    return href && href.indexOf("https:") === 0 ? href : null;
+  }
+
+  // What you owe for this meeting, leaving out anything that is no longer open.
+  function openOwed(m) {
+    var out = [];
+    (Array.isArray(m.owed) ? m.owed : []).forEach(function (o) {
+      if (!o) return;
+      if (o.kind === "task") {
+        var t = state.tasks.filter(function (x) { return x.id === o.id && x.status === "open"; })[0];
+        if (t) out.push({ kind: "task", target: t, title: o.title || t.title, why: o.why });
+      } else {
+        var i = state.items.filter(function (x) { return x.id === o.id; })[0];
+        var b = i ? bucket(i) : "closed";
+        if (i && b !== "later" && b !== "closed") out.push({ kind: "item", target: i, title: o.title || i.title, why: o.why });
+      }
+    });
+    return out;
+  }
+
+  function goToItem(item) {
+    state.view = item.lane === "commitment" ? "commitments" : "inbox";
+    writePref("desk.view", state.view);
+    if (state.filter !== "all" && state.filter !== item.space) {
+      state.filter = "all";
+      writePref("desk.space", "all");
+    }
+    render();
+    var card = document.querySelector('[data-item="' + item.id + '"]');
+    if (!card) return;
+    for (var p = card.parentElement; p; p = p.parentElement) if (p.tagName === "DETAILS") p.open = true;
+    card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    card.classList.add("flash");
+    setTimeout(function () { card.classList.remove("flash"); }, 2200);
+  }
+
+  function meetingCard(m, now) {
+    var start = meetingDate(m);
+    var live = !m.all_day && start.getTime() <= now && now < meetingEnd(m).getTime();
+    var node = el("article", "card meeting" + (live ? " in-progress" : ""));
+    node.setAttribute("data-meeting", m.id);
+
+    var top = el("div", "card-top");
+    top.appendChild(el("span", "tag tag-" + m.space, spaceLabel(m.space)));
+    top.appendChild(el("span", "when", m.all_day ? "All day" : clock(start) + " – " + clock(meetingEnd(m))));
+    if (m.recurring_event_id) top.appendChild(el("span", "kind", "Repeats"));
+    if (live) {
+      top.appendChild(el("span", "flag flag-3", "Now"));
+    } else if (!m.all_day) {
+      var mins = Math.ceil((start.getTime() - now) / 60000);
+      if (mins > 0 && mins <= 60) top.appendChild(el("span", "flag flag-2", "In " + mins + " min"));
+    }
+    if (RESPONSES[m.my_response]) top.appendChild(el("span", "flag flag-2", RESPONSES[m.my_response]));
+    node.appendChild(top);
+
+    node.appendChild(el("h3", "title", m.title || "Meeting"));
+
+    var names = (Array.isArray(m.attendees) ? m.attendees : [])
+      .filter(function (a) { return a && !a.self; })
+      .map(personName).filter(Boolean);
+    if (names.length) {
+      var shown = names.slice(0, 5).join(", ");
+      if (names.length > 5) shown += " +" + (names.length - 5) + " more";
+      node.appendChild(el("p", "reason", "With " + shown));
+    }
+    if (m.brief) node.appendChild(el("p", "gist", m.brief));
+
+    var owed = openOwed(m);
+    if (owed.length) {
+      var box = el("div", "owed");
+      box.appendChild(el("p", "owed-head", "What you owe"));
+      owed.forEach(function (o) {
+        var row = el("button", "owed-row");
+        row.type = "button";
+        row.appendChild(el("span", "owed-title", o.title));
+        if (o.why) row.appendChild(el("span", "owed-why", o.why));
+        row.addEventListener("click", function () {
+          if (o.kind === "task") openTask(o.target); else goToItem(o.target);
+        });
+        box.appendChild(row);
+      });
+      node.appendChild(box);
+    }
+
+    var join = httpsLink(m.join_url);
+    var cal = httpsLink(m.event_url);
+    if (join || cal) {
+      var actions = el("div", "actions");
+      if (join) actions.appendChild(linkTo(join, "Join", "btn join"));
+      if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
+      node.appendChild(actions);
+    }
+    return node;
+  }
+
+  function renderMeetings() {
+    var list = $("list-meetings");
+    list.textContent = "";
+    var now = Date.now();
+    var today = dayStart(new Date());
+    var days = {};
+    var order = [];
+    shownMeetings().forEach(function (m) {
+      var key = dayStart(meetingDate(m));
+      var offset = Math.round((key - today) / DAY);
+      if (offset < 0 || offset > 7) return;
+      if (!days[key]) { days[key] = { offset: offset, key: key, meetings: [] }; order.push(key); }
+      days[key].meetings.push(m);
+    });
+    order.sort(function (a, b) { return a - b; });
+    var left = meetingsLeftToday();
+    $("n-meetings").textContent = left ? left + " to come today" : "";
+    if (!order.length) {
+      list.appendChild(el("p", "empty", "You have no meetings in the next 7 days."));
+      return;
+    }
+    order.forEach(function (key) {
+      var day = days[key];
+      var name = day.offset === 0 ? "Today" : day.offset === 1 ? "Tomorrow"
+        : new Date(key).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
+      list.appendChild(el("h3", "theme day", name));
+      var cards = el("div", "list");
+      var byTime = function (a, b) {
+        if (!!a.all_day !== !!b.all_day) return a.all_day ? -1 : 1;
+        return meetingDate(a).getTime() - meetingDate(b).getTime();
+      };
+      var earlier = [];
+      day.meetings.sort(byTime).forEach(function (m) {
+        if (day.offset === 0 && meetingEnded(m, now)) earlier.push(m);
+        else cards.appendChild(meetingCard(m, now));
+      });
+      list.appendChild(cards);
+      if (earlier.length) {
+        var fold = el("details", "earlier");
+        fold.appendChild(el("summary", null, "Earlier today · " + earlier.length));
+        var inner = el("div", "list");
+        earlier.forEach(function (m) { inner.appendChild(meetingCard(m, now)); });
+        fold.appendChild(inner);
+        list.appendChild(fold);
+      }
     });
   }
 
@@ -1042,6 +1238,13 @@
           .order("created_at", { ascending: true })
           .limit(1000),
         sb.from("projects").select("id, space, name").eq("status", "active").order("name").limit(1000),
+        // From the start of today (a little earlier, so all-day events dated in another time zone are not missed).
+        sb.from("meetings")
+          .select("id, space, event_id, title, starts_at, ends_at, all_day, status, my_response, join_url, event_url, location, organizer, attendees, recurring_event_id, brief, owed")
+          .gte("starts_at", new Date(dayStart(new Date()) - 14 * 60 * 60 * 1000).toISOString())
+          .neq("status", "cancelled")
+          .order("starts_at", { ascending: true })
+          .limit(200),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -1050,6 +1253,7 @@
       state.accounts = index(results[2].data, function (a) { return a.space; });
       state.tasks = results[3].data || [];
       state.projects = results[4].data || [];
+      state.meetings = results[5].data || [];
       var items = results[0].data || [];
       state.people = await loadPeople(items);
       announceNew(items);
@@ -1144,6 +1348,7 @@
     state.channel = sb.channel("desk-items")
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }
         else setLive("Reconnecting", false);
@@ -1273,6 +1478,7 @@
         started = false;
         if (state.channel) { sb.removeChannel(state.channel); state.channel = null; }
         state.items = [];
+        state.meetings = [];
         state.seen = null;
         show(false);
       }

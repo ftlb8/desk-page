@@ -175,7 +175,8 @@ details#box-tasks-done > summary { font-size: 0.85rem; margin-bottom: 8px; }
 .views { display: flex; gap: 4px; max-width: 780px; margin: 0 auto; padding: 12px 20px 0; border-bottom: 1px solid var(--line); }
 .view { padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
 .view.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
-@media (max-width: 520px) { .views { padding: 10px 14px 0; } .view { padding: 8px 10px; } }
+.view { white-space: nowrap; }
+@media (max-width: 520px) { .views { padding: 10px 14px 0; gap: 0; overflow-x: auto; } .view { padding: 8px 8px; font-size: 0.9rem; } }
 
 .task-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
 .task-tools .gap { width: 10px; }
@@ -248,3 +249,27 @@ details#box-decisions > summary { font-size: 0.82rem; text-transform: uppercase;
 .said-from { margin: 0; font-size: 0.8rem; color: var(--muted); }
 .said .body { margin-top: 4px; }
 .said-detail { margin: 6px 0 0; }
+
+/* Meetings */
+.day { margin-top: 20px; }
+.day:first-child { margin-top: 0; }
+.when { font-weight: 650; font-variant-numeric: tabular-nums; }
+.card.meeting.in-progress { border-left-color: var(--accent); }
+.card.meeting .reason { margin-top: 2px; overflow-wrap: anywhere; }
+.owed { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.owed-head { margin: 0 0 4px; font-size: 0.8rem; color: var(--muted); font-weight: 650; }
+.owed-row {
+  display: block; width: 100%; padding: 6px 8px; margin: 0 0 2px -8px; border: 0; border-radius: 6px;
+  background: none; text-align: left; font-size: 0.95rem; max-width: calc(100% + 8px);
+}
+.owed-row:hover { background: var(--bg); }
+.owed-title { display: block; color: var(--accent); overflow-wrap: anywhere; }
+.owed-why { display: block; color: var(--muted); font-size: 0.88rem; overflow-wrap: anywhere; }
+.btn.join { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.btn.join:hover { border-color: var(--accent); filter: brightness(1.08); }
+details.earlier { margin-top: 12px; }
+details.earlier > summary { font-size: 0.9rem; margin-bottom: 10px; }
+details.earlier .card { opacity: 0.8; }
+.flash { animation: flash 2.2s ease-out; }
+@keyframes flash { 0%, 55% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .flash { animation: none; box-shadow: 0 0 0 3px var(--accent); } }
