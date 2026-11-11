@@ -141,11 +141,43 @@
     return item.origin === "notes";
   }
 
-  function sourceLink(item) {
-    if (fromNotes(item)) {
-      var href = item.source_url ? F.safeUrl(item.source_url) : null;
-      return href ? { href: href, label: "Open notes" } : null;
+  // What an item from meetings rests on: one entry per place it was written down
+  // (the written notes, Granola), each with its own words and link.
+  function sourcesOf(item) {
+    var list = Array.isArray(item.sources) ? item.sources.filter(function (x) { return x && x.label; }) : [];
+    if (!list.length && (item.source_label || item.quote)) {
+      list = [{ label: item.source_label || "Meeting notes", url: item.source_url, quote: item.quote, meeting_on: item.meeting_on }];
     }
+    return list;
+  }
+
+  function isGranola(source) {
+    return /^granola\b/i.test(String(source.label || ""));
+  }
+
+  function meetingDay(value) {
+    return value ? new Date(value + "T12:00:00").toLocaleDateString([], { day: "numeric", month: "short" }) : null;
+  }
+
+  // One link per source that has one.
+  function sourceLinks(item) {
+    if (!fromNotes(item)) {
+      var one = sourceLink(item);
+      return one ? [one] : [];
+    }
+    var seen = {};
+    var links = [];
+    sourcesOf(item).forEach(function (x) {
+      var href = x.url ? F.safeUrl(x.url) : null;
+      if (!href || seen[href]) return;
+      seen[href] = true;
+      links.push({ href: href, label: isGranola(x) ? "Open Granola" : "Open notes", name: x.label });
+    });
+    return links;
+  }
+
+  function sourceLink(item) {
+    if (fromNotes(item)) return sourceLinks(item)[0] || null;
     var doc = docNotice(item);
     if (doc && doc.fileUrl) return { href: withAccount(doc.fileUrl, item), label: "Open file" };
     if (isEmail(item)) {
@@ -360,8 +392,12 @@
     if (fromNotes(item)) {
       var KINDS = { promise: "Promise", todo: "To-do", decision: "Decision" };
       top.appendChild(el("span", "kind", KINDS[item.kind] || "To-do"));
-      var met = item.meeting_on ? new Date(item.meeting_on + "T12:00:00").toLocaleDateString([], { day: "numeric", month: "short" }) : null;
-      meta = (item.kind === "promise" && item.owed_to ? "To " + item.owed_to + " · " : "") + (item.source_label || "Meeting notes") + (met ? " · meeting of " + met : "");
+      var met = meetingDay(item.meeting_on);
+      var from = sourcesOf(item);
+      var where = from.length > 1
+        ? (from.some(isGranola) && !from.every(isGranola) ? "Notes and Granola" : from.length + " sources")
+        : (from[0] ? from[0].label : "Meeting notes");
+      meta = (item.kind === "promise" && item.owed_to ? "To " + item.owed_to + " · " : "") + where + (met ? " · meeting of " + met : "");
     } else {
       meta = (promise ? "To " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
     }
@@ -380,20 +416,28 @@
 
     var doc = docNotice(item);
     if (fromNotes(item)) {
-      if (item.quote) {
+      var told = sourcesOf(item).filter(function (x) { return x.quote || x.detail; });
+      if (told.length) {
         var said = el("details", "message");
-        said.appendChild(el("summary", null, "From the notes"));
-        said.appendChild(el("p", "body", item.quote));
+        said.appendChild(el("summary", null, told.length > 1 ? "From the meeting · " + told.length + " sources" : "From the notes"));
+        told.forEach(function (x) {
+          var block = el("div", "said");
+          var day = meetingDay(x.meeting_on);
+          block.appendChild(el("p", "said-from", x.label + (day ? " · " + day : "")));
+          if (x.quote) block.appendChild(el("p", "body", x.quote));
+          // What the summary above already says is not repeated.
+          if (x.detail && x.detail !== item.summary) block.appendChild(el("p", "said-detail", x.detail));
+          said.appendChild(block);
+        });
         node.appendChild(said);
       }
     } else if (doc) node.appendChild(docView(item, doc));
     else if (m.body) node.appendChild(originalView(item));
 
     var actions = el("div", "actions");
-    var link = sourceLink(item);
-    if (link) {
+    sourceLinks(item).forEach(function (link) {
       actions.appendChild(linkTo(link.href, link.label, "btn"));
-    }
+    });
     if (kind === "decision") {
       actions.appendChild(button("Noted", "btn", function () { act(item.id, "done"); }));
       actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
@@ -861,9 +905,13 @@
     var from = task.source_item_id ? state.items.filter(function (i) { return i.id === task.source_item_id; })[0] : null;
     if (from) {
       source.hidden = false;
-      source.appendChild(document.createTextNode((from.lane === "commitment" ? "From your promise: " : "From: ") + from.title + " "));
-      var link = sourceLink(from);
-      if (link) source.appendChild(linkTo(link.href, link.label + " ↗", "chip"));
+      var lead = fromNotes(from) ? (from.kind === "promise" ? "From your promise in a meeting: " : from.kind === "decision" ? "From a decision in a meeting: " : "From a meeting: ")
+        : from.lane === "commitment" ? "From your promise: " : "From: ";
+      source.appendChild(document.createTextNode(lead + from.title + " "));
+      sourceLinks(from).forEach(function (link) {
+        source.appendChild(linkTo(link.href, link.label + " ↗", "chip"));
+        source.appendChild(document.createTextNode(" "));
+      });
     }
     $("td-done").hidden = !task.id || task.status !== "open";
     $("td-drop").hidden = !task.id || task.status !== "open";
@@ -905,11 +953,19 @@
     task.source_item_id = item.id;
     task.due_on = item.due_on || null;
     task.context = item.summary || "";
-    var link = sourceLink(item);
-    if (link) task.links.push({ label: link.label, url: link.href });
+    if (fromNotes(item)) {
+      // Everything each source says goes into the background, in case no suggestion comes back.
+      var extra = sourcesOf(item).filter(function (x) { return x.detail && x.detail !== item.summary; })
+        .map(function (x) { return x.label + ": " + x.detail; });
+      if (extra.length) task.context = [task.context].concat(extra).filter(Boolean).join("\n");
+    }
+    sourceLinks(item).forEach(function (link) {
+      task.links.push({ label: link.name || link.label, url: link.href });
+    });
     var s = await suggest({ item_id: item.id });
     if (s) s.space = item.space;
-    showDialog(withSuggestion(task, s), s ? "Suggested from the message. Change anything, then save." : "Could not get a suggestion, so this is filled in from the item. Change anything, then save.");
+    var basis = !fromNotes(item) ? "the message" : sourcesOf(item).length > 1 ? "what the notes and Granola say" : "your meeting notes";
+    showDialog(withSuggestion(task, s), s ? "Suggested from " + basis + ". Change anything, then save." : "Could not get a suggestion, so this is filled in from the item. Change anything, then save.");
     if (trigger) { trigger.disabled = false; trigger.textContent = "Make a task"; }
   }
 
@@ -973,7 +1029,7 @@
       var since = new Date(Date.now() - DAY).toISOString();
       var results = await Promise.all([
         sb.from("items")
-          .select("id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
+          .select("id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, sources, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
           .or('status.in.(open,snoozed),closed_at.gte."' + since + '"')
           .order("created_at", { ascending: false })
           .limit(500),

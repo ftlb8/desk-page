@@ -241,3 +241,10 @@ details#box-decisions > summary { font-size: 0.82rem; text-transform: uppercase;
 }
 .toast .quiet { color: var(--bg); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .stamp, .toast { animation: none; } }
+
+/* What each meeting source says about an item */
+.said { margin-top: 8px; }
+.said + .said { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.said-from { margin: 0; font-size: 0.8rem; color: var(--muted); }
+.said .body { margin-top: 4px; }
+.said-detail { margin: 6px 0 0; }
