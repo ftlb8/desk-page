@@ -152,7 +152,6 @@ details#box-closed .card, details#box-later .card { opacity: 0.85; }
   padding: 6px 10px; min-height: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 0.92rem;
 }
 #task-title { flex: 1 1 260px; }
-#task-project { flex: 0 1 170px; }
 .horizon { margin: 14px 0 6px; font-size: 0.82rem; color: var(--muted); font-weight: 650; }
 .task {
   display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 6px;
@@ -160,9 +159,12 @@ details#box-closed .card, details#box-later .card { opacity: 0.85; }
 }
 .task input[type="checkbox"] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
 .task-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
-.task-title { overflow-wrap: anywhere; }
+.task-title { overflow-wrap: anywhere; border: 0; background: none; padding: 0; text-align: left; font-size: 1rem; }
+.task-title:hover { text-decoration: underline; text-underline-offset: 3px; }
 .task-tags { display: inline-flex; flex-wrap: wrap; gap: 8px; font-size: 0.8rem; }
-.project { color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; }
+.project { color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; background: none; font-size: 0.8rem; line-height: 1.5; }
+.project.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.repeat { color: var(--muted); }
 .task.is-done .task-title { text-decoration: line-through; color: var(--muted); }
 .task-when { min-height: 30px; padding: 2px 6px; font-size: 0.82rem; }
 .made { font-size: 0.85rem; color: var(--muted); }
@@ -174,3 +176,26 @@ details#box-tasks-done > summary { font-size: 0.85rem; margin-bottom: 8px; }
 .view { padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
 .view.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
 @media (max-width: 520px) { .views { padding: 10px 14px 0; } .view { padding: 8px 10px; } }
+
+.task-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.task-tools .gap { width: 10px; }
+.task-tools .project { padding: 3px 10px; font-size: 0.85rem; }
+
+/* The task you can open */
+.task-dialog { width: min(680px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); }
+.task-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.task-dialog form { padding: 18px 20px 20px; }
+.task-dialog h2 { margin: 0 0 10px; }
+.task-dialog label { display: block; font-size: 0.8rem; color: var(--muted); margin: 12px 0 4px; }
+.task-dialog input[type="text"], .task-dialog input[type="url"], .task-dialog input[type="date"], .task-dialog select, .task-dialog textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font: inherit; color: inherit;
+}
+.task-dialog textarea { resize: vertical; line-height: 1.45; }
+.td-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.td-row > div, .td-row > input { flex: 1 1 150px; min-width: 0; }
+.td-addlink { margin-top: 6px; align-items: center; }
+.td-addlink .btn { flex: none; }
+.td-link { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.hint { font-size: 0.85rem; color: var(--muted); margin: 10px 0 0; }
+.td-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.td-actions .primary { padding: 8px 18px; }

@@ -34,6 +34,8 @@
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
     view: readPref("desk.view", "inbox"), // inbox | commitments | tasks
+    taskMode: readPref("desk.task-mode", "list"), // list | days
+    project: null, // show only this project's tasks
     seen: null,   // ids already shown, to tell which waiting items are new
     loading: false,
     reloadTimer: null,
@@ -350,7 +352,8 @@
       if (taskFor(item)) {
         actions.appendChild(el("span", "made", "In your tasks"));
       } else {
-        actions.appendChild(button("Make a task", "btn subtle", function () { taskFromItem(item); }));
+        var make = button("Make a task", "btn subtle", function () { taskFromItem(item, make); });
+        actions.appendChild(make);
       }
       actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
     } else {
@@ -460,9 +463,15 @@
     { id: "week", label: "This week" },
     { id: "later", label: "Later" },
   ];
+  var REPEATS = { daily: "every day", weekly: "every week", biweekly: "every 2 weeks", monthly: "every month" };
 
   function projectName(task) {
     return task.projects && task.projects.name ? task.projects.name : null;
+  }
+
+  function localDay(date) {
+    var d = date || new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
 
   function taskRow(task) {
@@ -477,12 +486,18 @@
     row.appendChild(tick);
 
     var main = el("div", "task-main");
-    main.appendChild(el("span", "task-title", task.title));
+    main.appendChild(button(task.title, "task-title", function () { openTask(task); }));
     var tags = el("span", "task-tags");
     tags.appendChild(el("span", "tag tag-" + task.space, spaceLabel(task.space)));
-    if (projectName(task)) tags.appendChild(el("span", "project", projectName(task)));
+    if (projectName(task)) {
+      tags.appendChild(button(projectName(task), "project", function () {
+        state.project = task.project_id;
+        render();
+      }));
+    }
     var due = dueLabel(task.due_on);
     if (due && task.status === "open") tags.appendChild(el("span", "flag flag-" + (due.late ? 3 : 2), due.text));
+    if (task.repeat) tags.appendChild(el("span", "repeat", "Repeats " + REPEATS[task.repeat]));
     main.appendChild(tags);
     row.appendChild(main);
 
@@ -498,25 +513,71 @@
       });
       when.addEventListener("change", function () { saveTask(task.id, { horizon: when.value }); });
       row.appendChild(when);
-      var drop = button("Drop", "quiet", function () { saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() }); });
-      row.appendChild(drop);
     }
     return row;
+  }
+
+  function group(list, heading, rows) {
+    if (!rows.length) return;
+    list.appendChild(el("h3", "horizon", heading));
+    rows.forEach(function (t) { list.appendChild(taskRow(t)); });
   }
 
   function renderTasks() {
     var list = $("list-tasks");
     list.textContent = "";
-    var mine = state.tasks.filter(function (t) { return state.filter === "all" || t.space === state.filter; });
+    var inSpace = state.tasks.filter(function (t) { return state.filter === "all" || t.space === state.filter; });
+    var openInSpace = inSpace.filter(function (t) { return t.status === "open"; });
+    if (state.project && !state.projects.some(function (p) { return p.id === state.project && (state.filter === "all" || p.space === state.filter); })) {
+      state.project = null;
+    }
+    var mine = inSpace.filter(function (t) { return !state.project || t.project_id === state.project; });
     var open = mine.filter(function (t) { return t.status === "open"; });
     $("n-tasks").textContent = open.length ? String(open.length) : "";
-    HORIZONS.forEach(function (h) {
-      var rows = open.filter(function (t) { return t.horizon === h.id; });
-      if (!rows.length) return;
-      list.appendChild(el("h3", "horizon", h.label));
-      rows.forEach(function (t) { list.appendChild(taskRow(t)); });
+
+    // List or by day, then one chip per project with open tasks.
+    var tools = $("task-tools");
+    tools.textContent = "";
+    [{ id: "list", label: "List" }, { id: "days", label: "By day" }].forEach(function (m) {
+      var b = button(m.label, "filter" + (state.taskMode === m.id ? " on" : ""), function () {
+        state.taskMode = m.id;
+        writePref("desk.task-mode", m.id);
+        render();
+      });
+      b.setAttribute("aria-pressed", state.taskMode === m.id ? "true" : "false");
+      tools.appendChild(b);
     });
-    if (!open.length) list.appendChild(el("p", "empty", "No open tasks."));
+    tools.appendChild(el("span", "gap"));
+    var all = button("All projects", "project" + (!state.project ? " on" : ""), function () { state.project = null; render(); });
+    tools.appendChild(all);
+    state.projects.forEach(function (p) {
+      if (state.filter !== "all" && p.space !== state.filter) return;
+      var n = openInSpace.filter(function (t) { return t.project_id === p.id; }).length;
+      if (!n && state.project !== p.id) return;
+      tools.appendChild(button(p.name + " " + n, "project" + (state.project === p.id ? " on" : ""), function () {
+        state.project = state.project === p.id ? null : p.id;
+        render();
+      }));
+    });
+
+    if (state.taskMode === "days") {
+      var today = localDay();
+      var byCreated = function (a, b) { return a.created_at < b.created_at ? -1 : 1; };
+      group(list, "Overdue", open.filter(function (t) { return t.due_on && t.due_on < today; }).sort(function (a, b) { return a.due_on < b.due_on ? -1 : 1; }));
+      var days = {};
+      open.forEach(function (t) { if (t.due_on && t.due_on >= today) (days[t.due_on] = days[t.due_on] || []).push(t); });
+      Object.keys(days).sort().forEach(function (day) {
+        var d = new Date(day + "T12:00:00");
+        var name = d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
+        group(list, day === today ? "Today · " + name : name, days[day].sort(byCreated));
+      });
+      group(list, "No date", open.filter(function (t) { return !t.due_on; }));
+    } else {
+      HORIZONS.forEach(function (h) {
+        group(list, h.label, open.filter(function (t) { return t.horizon === h.id; }));
+      });
+    }
+    if (!open.length) list.appendChild(el("p", "empty", state.project ? "No open tasks in this project." : "No open tasks."));
 
     var done = mine.filter(function (t) { return t.status === "done"; });
     var doneList = $("list-tasks-done");
@@ -524,18 +585,6 @@
     done.forEach(function (t) { doneList.appendChild(taskRow(t)); });
     $("n-tasks-done").textContent = done.length ? String(done.length) : "";
     $("box-tasks-done").hidden = !done.length;
-  }
-
-  function fillProjectChoices() {
-    var space = $("task-space").value;
-    var box = $("project-names");
-    box.textContent = "";
-    state.projects.forEach(function (p) {
-      if (p.space !== space) return;
-      var o = document.createElement("option");
-      o.value = p.name;
-      box.appendChild(o);
-    });
   }
 
   async function saveTask(id, changes) {
@@ -546,7 +595,7 @@
 
   // Finds the project by name in that organisation, or creates it.
   async function projectId(space, name) {
-    var wanted = name.trim();
+    var wanted = String(name || "").trim();
     if (!wanted) return null;
     for (var i = 0; i < state.projects.length; i++) {
       var p = state.projects[i];
@@ -557,24 +606,150 @@
     return made.data.id;
   }
 
-  async function addTask(fields) {
+  // Asks Claude to work out what a task is from one line or from an item. Suggests only.
+  async function suggest(body) {
     try {
-      var row = { space: fields.space, title: fields.title.trim(), horizon: fields.horizon || "week" };
-      if (fields.source_item_id) row.source_item_id = fields.source_item_id;
-      if (fields.due_on) row.due_on = fields.due_on;
-      row.project_id = await projectId(fields.space, fields.project || "");
-      var res = await sb.from("tasks").insert(row);
-      if (res.error) throw new Error(res.error.message);
-    } catch (err) {
-      notice("The task was not saved: " + (err && err.message ? err.message : "unknown error"));
-      return false;
+      var res = await sb.functions.invoke("task-suggest", { body: body });
+      if (res.error || !res.data || !res.data.ok) return null;
+      return res.data.suggestion;
+    } catch (_) {
+      return null;
     }
-    await load();
-    return true;
   }
 
-  function taskFromItem(item) {
-    addTask({ space: item.space, title: item.title, horizon: "week", source_item_id: item.id, due_on: item.due_on || null });
+  // ----- The task you can open -----
+
+  var draft = null; // the task shown in the dialog; id is null until it is saved
+
+  function fillProjectChoices(space) {
+    var box = $("project-names");
+    box.textContent = "";
+    state.projects.forEach(function (p) {
+      if (p.space !== space) return;
+      var o = document.createElement("option");
+      o.value = p.name;
+      box.appendChild(o);
+    });
+  }
+
+  function drawLinks() {
+    var box = $("td-links");
+    box.textContent = "";
+    draft.links.forEach(function (link, i) {
+      var row = el("div", "td-link");
+      row.appendChild(linkTo(link.url, (link.label || F.host(link.url)) + " ↗", "chip"));
+      row.appendChild(button("Remove", "quiet", function () { draft.links.splice(i, 1); drawLinks(); }));
+      box.appendChild(row);
+    });
+    if (!draft.links.length) box.appendChild(el("p", "empty", "No links yet."));
+  }
+
+  function showDialog(task, hint) {
+    draft = task;
+    $("td-heading").textContent = task.id ? "Task" : "New task";
+    $("td-hint").hidden = !hint;
+    $("td-hint").textContent = hint || "";
+    $("td-title").value = task.title || "";
+    $("td-space").value = task.space;
+    $("td-project").value = task.project || "";
+    $("td-horizon").value = task.horizon || "week";
+    $("td-due").value = task.due_on || "";
+    $("td-repeat").value = task.repeat || "";
+    $("td-context").value = task.context || "";
+    $("td-notes").value = task.notes || "";
+    $("td-link-label").value = "";
+    $("td-link-url").value = "";
+    $("td-error").hidden = true;
+    fillProjectChoices(task.space);
+    drawLinks();
+
+    var source = $("td-source");
+    source.textContent = "";
+    source.hidden = true;
+    var from = task.source_item_id ? state.items.filter(function (i) { return i.id === task.source_item_id; })[0] : null;
+    if (from) {
+      source.hidden = false;
+      source.appendChild(document.createTextNode((from.lane === "commitment" ? "From your promise: " : "From: ") + from.title + " "));
+      var link = sourceLink(from);
+      if (link) source.appendChild(linkTo(link.href, link.label + " ↗", "chip"));
+    }
+    $("td-done").hidden = !task.id || task.status !== "open";
+    $("td-drop").hidden = !task.id || task.status !== "open";
+    var dialog = $("task-dialog");
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function openTask(task) {
+    showDialog({
+      id: task.id, status: task.status, space: task.space, title: task.title, project: projectName(task) || "",
+      horizon: task.horizon, due_on: task.due_on, repeat: task.repeat, context: task.context, notes: task.notes,
+      links: Array.isArray(task.links) ? task.links.slice() : [], source_item_id: task.source_item_id,
+    });
+  }
+
+  function blankTask(space, title) {
+    return { id: null, status: "open", space: space, title: title || "", project: "", horizon: "week", due_on: null, repeat: null, context: "", notes: "", links: [], source_item_id: null };
+  }
+
+  function withSuggestion(task, s) {
+    if (!s) return task;
+    task.title = s.title || task.title;
+    task.space = s.space || task.space;
+    task.project = s.project || "";
+    task.horizon = s.horizon || task.horizon;
+    task.due_on = s.due_on || task.due_on;
+    task.repeat = s.repeat || null;
+    task.context = s.context || "";
+    return task;
+  }
+
+  async function taskFromItem(item, trigger) {
+    if (trigger) { trigger.disabled = true; trigger.textContent = "Working it out…"; }
+    var task = blankTask(item.space, item.title);
+    task.source_item_id = item.id;
+    task.due_on = item.due_on || null;
+    task.context = item.summary || "";
+    var link = sourceLink(item);
+    if (link) task.links.push({ label: link.label, url: link.href });
+    var s = await suggest({ item_id: item.id });
+    if (s) s.space = item.space;
+    showDialog(withSuggestion(task, s), s ? "Suggested from the message. Change anything, then save." : "Could not get a suggestion, so this is filled in from the item. Change anything, then save.");
+    if (trigger) { trigger.disabled = false; trigger.textContent = "Make a task"; }
+  }
+
+  async function saveDraft() {
+    var problem = $("td-error");
+    problem.hidden = true;
+    var title = $("td-title").value.trim();
+    if (!title) return;
+    var space = $("td-space").value;
+    try {
+      var row = {
+        space: space,
+        title: title,
+        project_id: await projectId(space, $("td-project").value),
+        horizon: $("td-horizon").value,
+        due_on: $("td-due").value || null,
+        repeat: $("td-repeat").value || null,
+        context: $("td-context").value.trim() || null,
+        notes: $("td-notes").value.trim() || null,
+        links: draft.links,
+      };
+      var res;
+      if (draft.id) {
+        res = await sb.from("tasks").update(row).eq("id", draft.id);
+      } else {
+        if (draft.source_item_id) row.source_item_id = draft.source_item_id;
+        res = await sb.from("tasks").insert(row);
+      }
+      if (res.error) throw new Error(res.error.message);
+    } catch (err) {
+      problem.textContent = "Not saved: " + (err && err.message ? err.message : "unknown error");
+      problem.hidden = false;
+      return;
+    }
+    $("task-dialog").close();
+    await load();
   }
 
   function notice(text) {
@@ -605,7 +780,7 @@
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
         sb.from("accounts").select("space, slack_url, slack_user_id, email"),
         sb.from("tasks")
-          .select("id, space, project_id, title, horizon, status, due_on, source_item_id, created_at, done_at, projects(name)")
+          .select("id, space, project_id, title, notes, context, links, repeat, horizon, status, due_on, source_item_id, created_at, done_at, projects(name)")
           .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
           .order("created_at", { ascending: true })
           .limit(1000),
@@ -618,7 +793,6 @@
       state.accounts = index(results[2].data, function (a) { return a.space; });
       state.tasks = results[3].data || [];
       state.projects = results[4].data || [];
-      fillProjectChoices();
       var items = results[0].data || [];
       state.people = await loadPeople(items);
       announceNew(items);
@@ -736,18 +910,42 @@
 
   $("signout").addEventListener("click", function () { sb.auth.signOut(); });
 
-  $("task-space").value = readPref("desk.task-space", state.filter !== "all" ? state.filter : "metaculus");
-  $("task-space").addEventListener("change", function () {
-    writePref("desk.task-space", $("task-space").value);
-    $("task-project").value = "";
-    fillProjectChoices();
-  });
   $("task-form").addEventListener("submit", async function (event) {
     event.preventDefault();
-    var title = $("task-title").value;
-    if (!title.trim()) return;
-    var saved = await addTask({ space: $("task-space").value, title: title, project: $("task-project").value, horizon: $("task-horizon").value });
-    if (saved) $("task-title").value = "";
+    var text = $("task-title").value.trim();
+    if (!text) return;
+    var add = $("task-add");
+    add.disabled = true;
+    add.textContent = "Working it out…";
+    var space = state.filter !== "all" ? state.filter : readPref("desk.task-space", "metaculus");
+    var s = await suggest({ text: text, space: state.filter !== "all" ? state.filter : null });
+    showDialog(withSuggestion(blankTask(space, text), s), s ? "Suggested from what you typed. Change anything, then save." : "Could not get a suggestion. Fill in what you need, then save.");
+    add.disabled = false;
+    add.textContent = "Add";
+    $("task-title").value = "";
+  });
+
+  $("td-form").addEventListener("submit", function (event) { event.preventDefault(); saveDraft(); });
+  $("td-space").addEventListener("change", function () {
+    writePref("desk.task-space", $("td-space").value);
+    fillProjectChoices($("td-space").value);
+  });
+  $("td-cancel").addEventListener("click", function () { $("task-dialog").close(); });
+  $("td-done").addEventListener("click", function () {
+    $("task-dialog").close();
+    saveTask(draft.id, { status: "done", done_at: new Date().toISOString() });
+  });
+  $("td-drop").addEventListener("click", function () {
+    $("task-dialog").close();
+    saveTask(draft.id, { status: "dropped", done_at: new Date().toISOString() });
+  });
+  $("td-link-add").addEventListener("click", function () {
+    var url = F.safeUrl($("td-link-url").value.trim());
+    if (!url) { $("td-link-url").focus(); return; }
+    draft.links.push({ label: $("td-link-label").value.trim() || F.host(url), url: url });
+    $("td-link-label").value = "";
+    $("td-link-url").value = "";
+    drawLinks();
   });
 
   $("alerts").addEventListener("click", function () {

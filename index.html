@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="8">
+  <meta name="desk-version" content="9">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -56,21 +56,10 @@
       <section aria-labelledby="h-tasks" data-view="tasks">
         <h2 id="h-tasks">Tasks <span id="n-tasks" class="count"></span></h2>
         <form id="task-form" class="task-form" autocomplete="off">
-          <input id="task-title" type="text" placeholder="Add a task" maxlength="300" required aria-label="Task">
-          <select id="task-space" aria-label="Organisation">
-            <option value="metaculus">Metaculus</option>
-            <option value="cea">CEA</option>
-            <option value="personal">Personal</option>
-          </select>
-          <input id="task-project" type="text" list="project-names" placeholder="Project (optional)" maxlength="80" aria-label="Project">
-          <datalist id="project-names"></datalist>
-          <select id="task-horizon" aria-label="When">
-            <option value="today">Today</option>
-            <option value="week" selected>This week</option>
-            <option value="later">Later</option>
-          </select>
-          <button type="submit" class="btn">Add</button>
+          <input id="task-title" type="text" placeholder="Add a task in your own words, e.g. “payroll run every other Friday”" maxlength="500" required aria-label="New task">
+          <button id="task-add" type="submit" class="btn">Add</button>
         </form>
+        <div id="task-tools" class="task-tools"></div>
         <div id="list-tasks"></div>
         <details id="box-tasks-done">
           <summary>Done in the last 24 hours <span id="n-tasks-done" class="count"></span></summary>
@@ -95,11 +84,54 @@
     </main>
 
     <footer id="updated" class="updated"></footer>
+
+    <dialog id="task-dialog" class="task-dialog" aria-labelledby="td-heading">
+      <form id="td-form" method="dialog" autocomplete="off">
+        <h2 id="td-heading">Task</h2>
+        <p id="td-hint" class="hint" hidden></p>
+        <label for="td-title">Task</label>
+        <input id="td-title" type="text" maxlength="300" required>
+        <div class="td-row">
+          <div><label for="td-space">Organisation</label>
+            <select id="td-space"><option value="metaculus">Metaculus</option><option value="cea">CEA</option><option value="personal">Personal</option></select></div>
+          <div><label for="td-project">Project</label>
+            <input id="td-project" type="text" list="project-names" maxlength="80" placeholder="None"></div>
+          <datalist id="project-names"></datalist>
+        </div>
+        <div class="td-row">
+          <div><label for="td-horizon">When</label>
+            <select id="td-horizon"><option value="today">Today</option><option value="week">This week</option><option value="later">Later</option></select></div>
+          <div><label for="td-due">Due date</label>
+            <input id="td-due" type="date"></div>
+          <div><label for="td-repeat">Repeats</label>
+            <select id="td-repeat"><option value="">Does not repeat</option><option value="daily">Every day</option><option value="weekly">Every week</option><option value="biweekly">Every 2 weeks</option><option value="monthly">Every month</option></select></div>
+        </div>
+        <label for="td-context">Background</label>
+        <textarea id="td-context" rows="4" maxlength="4000"></textarea>
+        <label for="td-notes">Notes</label>
+        <textarea id="td-notes" rows="4" maxlength="20000"></textarea>
+        <label>Links</label>
+        <div id="td-links" class="td-links"></div>
+        <div class="td-row td-addlink">
+          <input id="td-link-label" type="text" maxlength="80" placeholder="Name" aria-label="Link name">
+          <input id="td-link-url" type="url" maxlength="2000" placeholder="https://…" aria-label="Link address">
+          <button id="td-link-add" type="button" class="btn">Add link</button>
+        </div>
+        <p id="td-source" class="hint" hidden></p>
+        <p id="td-error" class="error" role="alert" hidden></p>
+        <div class="td-actions">
+          <button id="td-save" type="submit" class="primary">Save</button>
+          <button id="td-done" type="button" class="btn">Mark done</button>
+          <button id="td-drop" type="button" class="btn subtle">Drop</button>
+          <button id="td-cancel" type="button" class="btn subtle">Cancel</button>
+        </div>
+      </form>
+    </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=8"></script>
-  <script src="config.js?v=8"></script>
-  <script src="format.js?v=8"></script>
-  <script src="app.js?v=8"></script>
+  <script src="vendor/supabase-2.119.0.js?v=9"></script>
+  <script src="config.js?v=9"></script>
+  <script src="format.js?v=9"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>
