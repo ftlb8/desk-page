@@ -172,6 +172,8 @@ details#box-closed .card, details#box-later .card { opacity: 0.85; }
 .project.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .repeat { color: var(--muted); }
 .task-when { padding: 2px 6px; min-height: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 0.85rem; }
+.task-urgent, .task-dialog label.td-urgent { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 0.85rem; color: var(--ink); cursor: pointer; }
+.task-dialog label.td-urgent { margin-top: 12px; font-size: 0.92rem; }
 .made { font-size: 0.85rem; color: var(--muted); }
 
 /* The task list: sections as cards, rows separated by hairlines */
@@ -202,6 +204,7 @@ details.tsec[open] > .tsec-head::before { transform: rotate(45deg); }
 .project-pill { cursor: pointer; }
 .pill-late { color: var(--late); border-color: var(--late); font-weight: 650; }
 .pill-today { color: var(--ink); border-color: var(--ink); font-weight: 650; }
+.pill-urgent { color: var(--bg); background: var(--today); border-color: var(--today); font-weight: 650; }
 .pill-slip { color: var(--slip); background: var(--slip-bg); border-color: transparent; font-weight: 650; }
 .trow-why { margin: 5px 0 0; color: var(--muted); font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trow-late { margin: 5px 0 0; color: var(--late); font-size: 0.86rem; }
@@ -486,7 +489,9 @@ textarea.note-edit { margin-top: 8px; }
 .cv-foot { padding: 6px 14px 12px; border-top: 1px solid var(--line); }
 .cv-foot .quiet { padding: 6px 0; }
 .tsec-head .cv-late { margin-left: auto; color: var(--late); font-weight: 650; font-size: 0.88rem; }
-.tsec-head .cv-late + .count { margin-left: 0; }
+.tsec-head .cv-late + .count, .tsec-head .cv-urgent + .count { margin-left: 0; }
+.tsec-head .cv-urgent { margin-left: auto; color: var(--today); }
+.tsec-head .cv-late + .cv-urgent { margin-left: 10px; }
 .cv-org + .cv-org { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cv-review-text { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .cv-points { list-style: none; margin: 8px 0 0; padding: 0; }

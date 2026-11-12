@@ -288,6 +288,7 @@
 
   function taskParts(task) {
     var parts = [task.title, task.context, task.notes, projectName(task)];
+    if (task.urgent && task.status === "open") parts.push("urgent");
     (Array.isArray(task.steps) ? task.steps : []).forEach(function (x) { parts.push(x && x.text); });
     (Array.isArray(task.links) ? task.links : []).forEach(function (x) { parts.push(x && x.label); });
     return parts;
@@ -1523,6 +1524,7 @@
         render();
       }));
     }
+    if (open && task.urgent) box.appendChild(el("span", "pill pill-urgent", "Urgent"));
     if (open && task.due_on) {
       var due = duePill(task.due_on);
       box.appendChild(el("span", "pill " + due.tone, due.text));
@@ -1640,6 +1642,14 @@
         saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() });
         toast("Task dropped.", function () { saveTask(task.id, { status: "open", done_at: null }); });
       }));
+      var urgentBox = el("label", "task-urgent");
+      var urgentTick = document.createElement("input");
+      urgentTick.type = "checkbox";
+      urgentTick.checked = !!task.urgent;
+      urgentTick.addEventListener("change", function () { saveTask(task.id, { urgent: urgentTick.checked }); });
+      urgentBox.appendChild(urgentTick);
+      urgentBox.appendChild(document.createTextNode(" Urgent"));
+      actions.appendChild(urgentBox);
       var when = document.createElement("select");
       when.className = "task-when";
       when.setAttribute("aria-label", "Move task");
@@ -1722,6 +1732,11 @@
   }
 
   // Tasks with a date first, by date; then the rest, newest first.
+  // Urgent tasks come first; inside each group the order above holds.
+  function urgentFirst(rows) {
+    return rows.filter(function (t) { return t.urgent; }).concat(rows.filter(function (t) { return !t.urgent; }));
+  }
+
   function taskOrder(a, b) {
     if (a.due_on && b.due_on) return a.due_on < b.due_on ? -1 : a.due_on > b.due_on ? 1 : 0;
     if (a.due_on !== b.due_on) return a.due_on ? -1 : 1;
@@ -1793,18 +1808,19 @@
     if (state.taskMode === "days") {
       var today = localDay();
       var byCreated = function (a, b) { return a.created_at < b.created_at ? -1 : 1; };
-      group("overdue", "Overdue", open.filter(function (t) { return t.due_on && t.due_on < today; }).sort(function (a, b) { return a.due_on < b.due_on ? -1 : 1; }));
+      group("overdue", "Overdue", urgentFirst(open.filter(function (t) { return t.due_on && t.due_on < today; }).sort(function (a, b) { return a.due_on < b.due_on ? -1 : 1; })));
       var days = {};
       open.forEach(function (t) { if (t.due_on && t.due_on >= today) (days[t.due_on] = days[t.due_on] || []).push(t); });
       Object.keys(days).sort().forEach(function (day) {
         var d = new Date(day + "T12:00:00");
         var name = d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
-        group(day, day === today ? "Today · " + name : name, days[day].sort(byCreated));
+        group(day, day === today ? "Today · " + name : name, urgentFirst(days[day].sort(byCreated)));
       });
-      group("nodate", "No date", open.filter(function (t) { return !t.due_on; }));
+      group("nodate", "No date", urgentFirst(open.filter(function (t) { return !t.due_on; })));
     } else {
       HORIZONS.forEach(function (h) {
         var rows = open.filter(function (t) { return horizonOf(t) === h.id; }).sort(taskOrder);
+        rows = urgentFirst(rows);
         if (needles.length && !rows.length) return;
         list.appendChild(taskSection(h.id, h.label, rows, true));
       });
@@ -1967,6 +1983,7 @@
     $("td-title").value = task.title || "";
     $("td-space").value = task.space;
     $("td-horizon").value = task.horizon || "week";
+    $("td-urgent").checked = !!task.urgent;
     $("td-due").value = task.due_on || "";
     $("td-repeat").value = task.repeat || "";
     $("td-context").value = task.context || "";
@@ -1991,7 +2008,7 @@
   function openTask(task) {
     showDialog({
       id: task.id, status: task.status, space: task.space, title: task.title, project: projectName(task) || "",
-      horizon: task.horizon, due_on: task.due_on, repeat: task.repeat, context: task.context, notes: task.notes,
+      horizon: task.horizon, urgent: !!task.urgent, due_on: task.due_on, repeat: task.repeat, context: task.context, notes: task.notes,
       links: Array.isArray(task.links) ? task.links.slice() : [], source_item_id: task.source_item_id,
       steps: (Array.isArray(task.steps) ? task.steps : []).map(function (x) { return { text: String(x.text || ""), done: !!x.done }; }),
       related: Array.isArray(task.related) ? task.related.slice() : [],
@@ -1999,7 +2016,7 @@
   }
 
   function blankTask(space, title) {
-    return { id: null, status: "open", space: space, title: title || "", project: "", horizon: "week", due_on: null, repeat: null, context: "", notes: "", links: [], steps: [], related: [], source_item_id: null };
+    return { id: null, status: "open", space: space, title: title || "", project: "", horizon: "week", urgent: false, due_on: null, repeat: null, context: "", notes: "", links: [], steps: [], related: [], source_item_id: null };
   }
 
   function withSuggestion(task, s) {
@@ -2066,6 +2083,7 @@
         title: title,
         project_id: await projectId(space, chosenProject()),
         horizon: $("td-horizon").value,
+        urgent: $("td-urgent").checked,
         due_on: $("td-due").value || null,
         repeat: $("td-repeat").value || null,
         context: $("td-context").value.trim() || null,
@@ -2493,20 +2511,21 @@
   function coverTaskList() {
     var today = localDay();
     var open = state.tasks.filter(function (t) {
-      return t.status === "open" && inFilter(t) && (horizonOf(t) === "today" || (t.due_on && t.due_on <= today));
+      return t.status === "open" && inFilter(t) && (t.urgent || horizonOf(t) === "today" || (t.due_on && t.due_on <= today));
     });
     var isLate = function (t) { return !!t.due_on && t.due_on < today; };
     var overdue = open.filter(isLate).sort(function (a, b) {
       return a.due_on < b.due_on ? -1 : a.due_on > b.due_on ? 1 : (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0);
     });
     var rest = open.filter(function (t) { return !isLate(t); }).sort(taskOrder);
-    return { all: overdue.concat(rest), late: overdue.length };
+    return { all: urgentFirst(overdue.concat(rest)), late: overdue.length, urgent: open.filter(function (t) { return t.urgent; }).length };
   }
 
   function renderCoverTasks() {
     var blk = coverBlock("cv-tasks", "Tasks today");
     var found = coverTaskList();
     if (found.late) blk.head.appendChild(el("span", "cv-late", found.late + " late"));
+    if (found.urgent) blk.head.appendChild(el("span", "cv-late cv-urgent", found.urgent + " urgent"));
     blk.head.appendChild(el("span", "count", found.all.length + " open"));
     var rows = needles.length ? found.all.filter(function (t) { return hit(taskParts(t)); }) : found.all;
     rows.slice(0, 6).forEach(function (t) { blk.body.appendChild(taskRow(t, "today")); });
@@ -3190,7 +3209,7 @@
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
         sb.from("accounts").select("space, slack_url, slack_user_id, email"),
         sb.from("tasks")
-          .select("id, space, project_id, title, notes, context, links, steps, related, repeat, horizon, status, due_on, source_item_id, slips, first_due_on, created_at, done_at, projects(name)")
+          .select("id, space, project_id, title, notes, context, links, steps, related, repeat, horizon, urgent, status, due_on, source_item_id, slips, first_due_on, created_at, done_at, projects(name)")
           .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
           .order("created_at", { ascending: true })
           .limit(1000),
