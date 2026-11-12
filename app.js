@@ -2700,7 +2700,7 @@
     syncLinkForm();
     var list = $("list-links");
     var edit = $("links-edit");
-    edit.textContent = state.linksEditing ? "Done" : "Edit";
+    edit.textContent = state.linksEditing ? "Done" : "Edit or remove links";
     edit.setAttribute("aria-pressed", state.linksEditing ? "true" : "false");
     var active = document.activeElement;
     var keepFocus = state.linkEdit && state.linkEdit.node.contains(active) ? active : null;
