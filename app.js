@@ -22,11 +22,21 @@
     { id: "today", label: "Today" },
     { id: "inbox", label: "Inbox" },
     { id: "tasks", label: "Tasks" },
+    { id: "work", label: "Work" },
     { id: "planning", label: "Planning" },
     { id: "meetings", label: "Meetings" },
     { id: "notes", label: "Notes" },
   ];
   var DAY = 24 * 60 * 60 * 1000;
+  var SEEN_KEY = "desk.runs-seen";
+
+  // Finished runs you already opened, kept for this browser session only.
+  function readSeen() {
+    try {
+      var v = JSON.parse(sessionStorage.getItem(SEEN_KEY) || "{}");
+      return v && typeof v === "object" ? v : {};
+    } catch (_) { return {}; }
+  }
 
   var state = {
     items: [],
@@ -49,6 +59,16 @@
     projects: [],
     covers: [],       // the written review of how things stand, one row per organisation
     starts: [],       // prepared steps (and draft replies) for items and tasks
+    runs: [],         // the Desk doing a task in the background (newest 50)
+    runOpen: {},      // run ids whose card you opened in Work
+    runAct: {},       // run ids whose Activity fold you opened
+    runEvents: {},    // run id -> { rows, loading, error, stamp }
+    runBusy: {},      // "run:ID" / "task:ID" -> the call on its way (plan, rewrite, start, answer, stop, discard)
+    runMsg: {},       // "run:ID" / "task:ID" -> the plain error from the last call
+    runAsk: {},       // runs where you are being asked about discarding
+    runGone: {},      // run id -> when you discarded it, so an older load does not bring it back
+    runSeen: readSeen(), // finished runs you opened in this browser session
+    planOpen: {},     // task ids whose plan panel is open
     covering: {},     // organisations whose review is being written
     starting: {},     // "item:7" / "task:3" while Start is preparing
     startOpen: {},    // starts whose panel you opened
@@ -57,7 +77,7 @@
     copied: {},       // starts whose draft was just copied
     sendFlow: {},     // "item:7" -> { phase: checking | confirm | blocked | failed | sending, text, to, reason, error } while a reply is being sent
     sent: {},         // start id -> { at, to } for replies sent from this page (a load also brings sent_at)
-    fresh: { starts: {}, covers: {} }, // rows just received from a function, kept until a load has them too
+    fresh: { starts: {}, covers: {}, runs: {} }, // rows just received from a function, kept until a load has them too
     people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
@@ -802,7 +822,8 @@
     var meetingCards = renderMeetings();
     var noteRows = renderNotes();
     var todayRows = renderToday();
-    var lists = state.view !== "meetings" && state.view !== "notes";
+    var workRows = renderWork();
+    var lists = state.view !== "meetings" && state.view !== "notes" && state.view !== "work";
     $("box-later").hidden = !lists || inTasks || !groups.later.length;
     $("box-closed").hidden = !lists || inTasks || !groups.closed.length;
 
@@ -813,6 +834,7 @@
     else if (state.view === "tasks") found += groups.commit.length + taskRows;
     else if (state.view === "planning") found += groups.decision.length + planRows;
     else if (state.view === "notes") found += noteRows;
+    else if (state.view === "work") found += workRows;
     else found += meetingCards;
 
     document.querySelectorAll("[data-view]").forEach(function (section) {
@@ -837,7 +859,7 @@
     var openTasks = state.tasks.filter(function (t) {
       return t.status === "open" && (state.filter === "all" || t.space === state.filter);
     }).length;
-    var counts = { inbox: waitingCount, tasks: openTasks, meetings: meetingsLeftToday() };
+    var counts = { inbox: waitingCount, tasks: openTasks, work: state.runs.filter(function (r) { return r.status === "needs_you" && inFilter(r); }).length, meetings: meetingsLeftToday() };
     var views = $("views");
     views.textContent = "";
     VIEWS.forEach(function (v) {
@@ -1524,6 +1546,8 @@
         render();
       }));
     }
+    var live = open ? activeRunOf(task.id) : null;
+    if (live) box.appendChild(el("span", "pill run-st-" + live.status, live.status === "needs_you" ? "Needs you" : "Working"));
     if (open && task.urgent) box.appendChild(el("span", "pill pill-urgent", "Urgent"));
     if (open && task.due_on) {
       var due = duePill(task.due_on);
@@ -1636,7 +1660,7 @@
     actions.appendChild(button("Edit", "btn", function () { openTask(task); }));
     if (open) {
       actions.appendChild(button("Done", "btn", function () { finishTask(task, row); }));
-      var begin = startControl("task", task.id, "btn");
+      var begin = planControl(task, "btn");
       if (begin) actions.appendChild(begin);
       actions.appendChild(button("Drop", "btn subtle", function () {
         saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() });
@@ -1692,13 +1716,13 @@
     row.appendChild(main);
     if (task.status === "open") {
       // On a wide screen a small quiet button sits at the right end of the row (hidden by the stylesheet on a phone).
-      var rowStart = startControl("task", task.id, "quiet row-start");
+      var rowStart = planControl(task, "quiet row-start");
       if (rowStart) row.appendChild(rowStart);
     }
     if (isOpen) row.appendChild(taskDetails(task, row, where));
     if (task.status === "open") {
-      var startBox = startPanel("task", task.id, where);
-      if (startBox) row.appendChild(startBox);
+      var planBox = planPanel(task, where);
+      if (planBox) row.appendChild(planBox);
     }
 
     // Tapping the row opens or closes it in place. Controls inside it do their own thing.
@@ -2416,7 +2440,7 @@
 
   var KIND_TAGS = { decision: "Decide", owed: "You owe", heads_up: "Heads-up" };
   var REVIEW_FAIL = "The review did not finish. Try again in a minute.";
-  var START_FAIL = "Start did not finish. Try again in a minute.";
+  var START_FAIL = "Plan did not finish. Try again in a minute.";
 
   function inFilter(row) {
     return state.filter === "all" || row.space === state.filter;
@@ -2679,7 +2703,7 @@
   function renderToday() {
     var now = Date.now();
     renderNextUp(now);
-    return renderCoverTasks() + renderCoverInbox() + renderCoverReview();
+    return renderCoverWork() + renderCoverTasks() + renderCoverInbox() + renderCoverReview();
   }
 
   // ---------- Start: steps (and a draft reply) for an item or a task ----------
@@ -2753,7 +2777,7 @@
     var existing = startFor(kind, id);
     var busy = !!state.starting[key];
     if (existing && state.startOpen[key]) return null;
-    var b = button(busy ? "Preparing..." : existing ? "Show start" : "Start", className, function () {
+    var b = button(busy ? "Preparing..." : existing ? "Show start" : "Plan", className, function () {
       if (existing) { state.startOpen[key] = true; render(); } else runStart(kind, id, false);
     });
     b.setAttribute("data-start", key);
@@ -2869,7 +2893,7 @@
   // A redraw takes the draft box out of the page and puts it back; these keep the caret where it was.
   function captureDraftFocus() {
     var a = document.activeElement;
-    if (!a || !a.classList || !a.classList.contains("start-draft")) return null;
+    if (!a || !a.classList || !(a.classList.contains("start-draft") || a.classList.contains("run-text"))) return null;
     return { box: a, from: a.selectionStart, to: a.selectionEnd, dir: a.selectionDirection, top: a.scrollTop };
   }
 
@@ -3185,6 +3209,677 @@
     return panel;
   }
 
+  // ---------- Runs: the Desk doing a task in the background ----------
+  // Everything a run says (plan, step, question, result, flags, events) was written by a model from other people's
+  // content. It is shown as plain text only; the one exception is a link in `outputs`, and only when it is https.
+
+  var RUN_COLUMNS = "id, space, task_id, title, status, plan, instructions, current_step, pending, result, flags, outputs, error, cost_usd, created_at, started_at, updated_at, finished_at";
+  var RUN_FAIL = "That did not work. Try again in a minute.";
+  var RUN_STATUS = { planned: "Planned", queued: "Waiting", working: "Working", needs_you: "Needs you", done: "Done", stopped: "Stopped", failed: "Failed" };
+  var RUN_ACTIVE = { queued: true, working: true, needs_you: true };
+  var RUN_SIZE = { simple: "Quick", medium: "Standard", complex: "Deep" };
+  var RUN_BUSY = { plan: "Writing the plan...", rewrite: "Writing the plan...", start: "Starting...", answer: "Sending your answer...", stop: "Stopping...", discard: "Discarding..." };
+  var RUN_MARK = { done: "✓", doing: "→", skipped: "–" };
+  var RUN_MARK_WORDS = { done: "Done: ", doing: "In progress: ", skipped: "Skipped: " };
+  var runBoxes = {}; // the text boxes of runs, kept between redraws so typing is never lost
+  var runBoxCount = 0;
+  var runPoll = null;
+
+  function runPlan(run) {
+    return run && run.plan && typeof run.plan === "object" && !Array.isArray(run.plan) ? run.plan : {};
+  }
+
+  // The strings in a list the model wrote; anything else is left out.
+  function textList(value) {
+    return (Array.isArray(value) ? value : []).map(function (x) { return typeof x === "string" ? x.trim() : ""; }).filter(Boolean);
+  }
+
+  function runKey(run) { return "run:" + run.id; }
+  function taskKey(taskId) { return "task:" + taskId; }
+
+  function runsOfTask(taskId) {
+    return state.runs.filter(function (r) { return r.task_id !== null && r.task_id !== undefined && String(r.task_id) === String(taskId); });
+  }
+  function activeRunOf(taskId) {
+    return runsOfTask(taskId).filter(function (r) { return RUN_ACTIVE[r.status]; })[0] || null;
+  }
+  function plannedRunOf(taskId) {
+    return runsOfTask(taskId).filter(function (r) { return r.status === "planned"; })[0] || null;
+  }
+
+  function money(n) { return "$" + (Number(n) || 0).toFixed(2); }
+
+  // How long a finished run took: "45 s", "3 min", "1 h 5 min"; empty when the times are missing.
+  function took(run) {
+    var from = Date.parse(run.started_at || run.created_at);
+    var to = Date.parse(run.finished_at);
+    if (isNaN(from) || isNaN(to) || to < from) return "";
+    var secs = Math.round((to - from) / 1000);
+    if (secs < 60) return secs + " s";
+    var mins = Math.round(secs / 60);
+    if (mins < 60) return mins + " min";
+    return Math.floor(mins / 60) + " h" + (mins % 60 ? " " + (mins % 60) + " min" : "");
+  }
+
+  // The time of an event: the clock today, with the date on other days.
+  function eventTime(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toDateString() === new Date().toDateString() ? clock(d) : noteDate(iso);
+  }
+
+  function markSeen(id) {
+    if (state.runSeen[id]) return;
+    state.runSeen[id] = true;
+    try { sessionStorage.setItem(SEEN_KEY, JSON.stringify(state.runSeen)); } catch (_) { /* kept in memory only */ }
+  }
+
+  function runParts(run) {
+    var parts = [run.title, run.result, RUN_STATUS[run.status], run.status, spaceLabel(run.space)];
+    if (run.status === "queued") parts.push("queued");
+    return parts;
+  }
+
+  // ----- keeping the runs -----
+
+  function sortRuns(list) {
+    return list.sort(function (a, b) { return (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0); });
+  }
+
+  // A run the function just returned stays on screen until a load has it too (or something newer).
+  function storeRun(row) {
+    state.runs = sortRuns(state.runs.filter(function (r) { return String(r.id) !== String(row.id); }).concat([row]));
+    state.fresh.runs[row.id] = { row: row, at: Date.now() };
+    delete state.runGone[row.id];
+    syncRunPoll();
+  }
+
+  function forgetBoxes(id) {
+    Object.keys(runBoxes).forEach(function (k) { if (k.indexOf(runKey({ id: id }) + "|") === 0) delete runBoxes[k]; });
+  }
+
+  function dropRun(id) {
+    state.runs = state.runs.filter(function (r) { return String(r.id) !== String(id); });
+    delete state.fresh.runs[id];
+    delete state.runOpen[id];
+    delete state.runAct[id];
+    delete state.runEvents[id];
+    delete state.runAsk[id];
+    state.runGone[id] = Date.now();
+    forgetBoxes(id);
+    syncRunPoll();
+  }
+
+  function mergeRuns(fetched) {
+    var out = fetched.filter(function (r) {
+      var gone = state.runGone[r.id];
+      if (gone && Date.now() - gone < 30000) return false;
+      delete state.runGone[r.id];
+      return true;
+    });
+    Object.keys(state.fresh.runs).forEach(function (id) {
+      var f = state.fresh.runs[id];
+      var at = -1;
+      out.forEach(function (r, i) { if (String(r.id) === id) at = i; });
+      var caughtUp = at >= 0 && (Date.parse(out[at].updated_at) || 0) >= (Date.parse(f.row.updated_at) || 0);
+      if (caughtUp || Date.now() - f.at > 30000) { delete state.fresh.runs[id]; return; }
+      if (at >= 0) out[at] = f.row; else out.push(f.row);
+    });
+    return sortRuns(out);
+  }
+
+  // Reads only the runs (for the live update and the 8-second check). Draws again only when something changed.
+  async function loadRuns() {
+    if (state.loadingRuns) { state.runsAgain = true; return; }
+    state.loadingRuns = true;
+    try {
+      var res = await sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50);
+      if (!res.error) {
+        var next = mergeRuns(res.data || []);
+        var changed = JSON.stringify(next) !== JSON.stringify(state.runs);
+        state.runs = next;
+        syncRunPoll();
+        if (changed) render();
+      }
+    } catch (_) { /* the next read tries again */ }
+    state.loadingRuns = false;
+    if (state.runsAgain) { state.runsAgain = false; loadRuns(); }
+  }
+
+  function loadRunsSoon() {
+    clearTimeout(state.runTimer);
+    state.runTimer = setTimeout(loadRuns, 250);
+  }
+
+  // While a run is waiting or working, read the runs every 8 seconds (the live update is the main way; this is the safety net).
+  function syncRunPoll() {
+    var active = state.runs.some(function (r) { return r.status === "queued" || r.status === "working"; });
+    var want = started && active;
+    if (want && !runPoll) runPoll = setInterval(function () { if (started && !document.hidden) loadRuns(); }, 8000);
+    else if (!want && runPoll) { clearInterval(runPoll); runPoll = null; }
+  }
+
+  // ----- talking to run-control -----
+
+  // One call. A second press while one is on its way does nothing. Returns true when it worked; otherwise the
+  // function's own words are kept for the place that asked (state.runMsg[key]).
+  async function runCall(key, action, body) {
+    if (state.runBusy[key]) return false;
+    state.runBusy[key] = action;
+    delete state.runMsg[key];
+    render();
+    var ok = false;
+    var words = RUN_FAIL;
+    try {
+      var res = await sb.functions.invoke("run-control", { body: body });
+      var data = res && !res.error ? res.data : null;
+      if (data && data.ok === true && (action === "discard" || (data.run && typeof data.run === "object"))) {
+        ok = true;
+        if (action === "discard") dropRun(body.run_id);
+        else storeRun(data.run);
+      } else {
+        words = (await failureWords(res, RUN_FAIL)).words;
+      }
+    } catch (_) { /* told below */ }
+    delete state.runBusy[key];
+    if (!ok) state.runMsg[key] = words;
+    render();
+    return ok;
+  }
+
+  function trimmed(text) { return String(text || "").trim(); }
+
+  // Writes (or rewrites) the plan of a task. `run` is its planned run, if it has one.
+  function planTask(taskId, run, note) {
+    state.planOpen[taskId] = true;
+    var body = { action: "plan", task_id: taskId };
+    if (trimmed(note)) body.note = trimmed(note);
+    return runCall(run ? runKey(run) : taskKey(taskId), run ? "rewrite" : "plan", body);
+  }
+
+  async function startRun(run, text) {
+    var body = { action: "start", run_id: run.id };
+    if (trimmed(text)) body.instructions = trimmed(text);
+    if (await runCall(runKey(run), "start", body)) {
+      if (run.task_id !== null && run.task_id !== undefined) delete state.planOpen[run.task_id];
+      forgetBoxes(run.id);
+      toast("Started. You can follow it in Work.");
+      render();
+    }
+  }
+
+  async function answerRun(run, text) {
+    if (!trimmed(text)) return;
+    if (await runCall(runKey(run), "answer", { action: "answer", run_id: run.id, text: trimmed(text) })) {
+      forgetBoxes(run.id);
+      render();
+    }
+  }
+
+  function stopRun(run) {
+    return runCall(runKey(run), "stop", { action: "stop", run_id: run.id });
+  }
+
+  async function discardRun(run) {
+    delete state.runAsk[run.id];
+    if (await runCall(runKey(run), "discard", { action: "discard", run_id: run.id })) {
+      if (run.task_id !== null && run.task_id !== undefined) delete state.planOpen[run.task_id];
+      render();
+    }
+  }
+
+  // ----- pieces shared by the plan panel and the Work card -----
+
+  // A text box for a run, created once and moved into each new panel.
+  function runBox(key, where, labelText, placeholder) {
+    var id = key + "|" + where;
+    var ta = runBoxes[id];
+    if (!ta) {
+      ta = document.createElement("textarea");
+      ta.className = "run-text";
+      ta.id = "run-text-" + (++runBoxCount);
+      ta.rows = 3;
+      ta.maxLength = 8000;
+      ta.spellcheck = true;
+      ta.addEventListener("input", function () { if (ta._refresh) ta._refresh(); });
+      runBoxes[id] = ta;
+    }
+    ta.placeholder = placeholder || "";
+    ta.setAttribute("aria-label", labelText);
+    ta._refresh = null;
+    return ta;
+  }
+
+  function boxWithLabel(parent, ta, text) {
+    var lab = el("label", "owed-head", text);
+    lab.htmlFor = ta.id;
+    parent.appendChild(lab);
+    parent.appendChild(ta);
+  }
+
+  // The steps of a plan or of a running run. Each carries its state in words for a screen reader.
+  function stepsList(steps) {
+    var ol = el("ol", "run-steps");
+    steps.forEach(function (s, i) {
+      var st = RUN_MARK[s.state] ? s.state : "todo";
+      var li = el("li", "run-step is-" + st);
+      li.appendChild(el("span", "run-mark", RUN_MARK[st] || (i + 1) + "."));
+      if (RUN_MARK_WORDS[st]) li.appendChild(el("span", "run-sr", RUN_MARK_WORDS[st]));
+      li.appendChild(el("span", "run-step-text", s.text));
+      ol.appendChild(li);
+    });
+    return ol;
+  }
+
+  function planSteps(run) {
+    return (Array.isArray(runPlan(run).steps) ? runPlan(run).steps : []).filter(function (s) { return s && typeof s.text === "string" && s.text.trim(); });
+  }
+
+  function bulletList(items) {
+    var ul = el("ul", "run-list");
+    items.forEach(function (t) { ul.appendChild(el("li", null, t)); });
+    return ul;
+  }
+
+  // What the plan says: summary, steps, what it will look at, what you get, and what it cannot do.
+  function planBody(box, run) {
+    var plan = runPlan(run);
+    var size = RUN_SIZE[plan.complexity];
+    if (size) {
+      var tags = el("p", "run-tags");
+      tags.appendChild(el("span", "kind", size));
+      box.appendChild(tags);
+    }
+    if (typeof plan.summary === "string" && plan.summary.trim()) box.appendChild(el("p", "gist pre", plan.summary.trim()));
+    var steps = planSteps(run);
+    if (steps.length) { box.appendChild(label("Steps")); box.appendChild(stepsList(steps)); }
+    var reads = textList(plan.reads);
+    if (reads.length) { box.appendChild(label("It will look at")); box.appendChild(bulletList(reads)); }
+    var gets = textList(plan.produces);
+    if (gets.length) { box.appendChild(label("You get")); box.appendChild(bulletList(gets)); }
+    var cannot = textList(plan.cannot);
+    if (cannot.length) {
+      var warn = el("div", "run-cannot");
+      warn.setAttribute("role", "note");
+      warn.appendChild(el("p", "owed-head", "It cannot do this part"));
+      warn.appendChild(bulletList(cannot));
+      box.appendChild(warn);
+    }
+  }
+
+  // The line that says what is on its way, or what went wrong, for one key.
+  function runStatusLine(box, key) {
+    var busy = state.runBusy[key];
+    if (busy) {
+      var p = el("p", "run-busy", RUN_BUSY[busy] || "Working...");
+      p.setAttribute("role", "status");
+      box.appendChild(p);
+    } else if (state.runMsg[key]) {
+      var e = el("p", "error run-error", state.runMsg[key]);
+      e.setAttribute("role", "alert");
+      box.appendChild(e);
+    }
+  }
+
+  // Discard with a second click: "Discard", then "Discard this run?" with a confirm button.
+  function discardControl(run, actions, busy) {
+    if (state.runAsk[run.id] && !busy) {
+      actions.appendChild(el("span", "note-ask", "Discard this run?"));
+      actions.appendChild(button("Yes, discard", "btn", function () { discardRun(run); }));
+      actions.appendChild(button("Keep", "btn subtle", function () { delete state.runAsk[run.id]; render(); }));
+      return;
+    }
+    var d = button("Discard", "btn subtle", function () { state.runAsk[run.id] = true; render(); });
+    d.disabled = !!busy;
+    actions.appendChild(d);
+  }
+
+  // For a planned run: the box for corrections, Start, Rewrite plan and Discard. One function for the task's plan
+  // panel and the Work card. `withStop` adds Stop (Work card only).
+  function plannedControls(box, run, where, withStop) {
+    var key = runKey(run);
+    var busy = state.runBusy[key];
+    var ta = runBox(key, where, "Add or correct anything", "Anything it should do differently, or know before it starts");
+    boxWithLabel(box, ta, "Add or correct anything");
+    ta.readOnly = !!busy;
+    runStatusLine(box, key);
+    var actions = el("div", "actions");
+    var go = button("Start", "primary", function () { startRun(run, ta.value); });
+    go.disabled = !!busy;
+    actions.appendChild(go);
+    if (run.task_id !== null && run.task_id !== undefined) {
+      var again = button("Rewrite plan", "btn", function () { planTask(run.task_id, run, ta.value); });
+      again.disabled = !!busy;
+      actions.appendChild(again);
+    }
+    discardControl(run, actions, busy);
+    if (withStop) {
+      var stop = button("Stop", "btn subtle", function () { stopRun(run); });
+      stop.disabled = !!busy;
+      actions.appendChild(stop);
+    }
+    box.appendChild(actions);
+  }
+
+  // ----- the plan on a task -----
+
+  function planPanelShown(task) {
+    if (activeRunOf(task.id) || !state.planOpen[task.id]) return false;
+    return !!plannedRunOf(task.id) || !!state.runBusy[taskKey(task.id)] || !!state.runMsg[taskKey(task.id)];
+  }
+
+  // The button on a task: "Plan", "Show plan" when a plan is already written, "Open run" while the Desk is on it.
+  function planControl(task, className) {
+    var live = activeRunOf(task.id);
+    var planned = plannedRunOf(task.id);
+    var b;
+    if (live) {
+      b = button("Open run", className, function () { goToRun(live); });
+    } else {
+      if (planPanelShown(task)) return null;
+      b = button(planned ? "Show plan" : "Plan", className, function () {
+        if (planned) { state.planOpen[task.id] = true; render(); } else planTask(task.id, null, "");
+      });
+    }
+    b.setAttribute("data-plan", taskKey(task.id));
+    return b;
+  }
+
+  function planPanel(task, where) {
+    if (!planPanelShown(task)) return null;
+    var run = plannedRunOf(task.id);
+    var panel = el("div", "fold-body start-panel run-plan");
+    panel.setAttribute("data-plan-panel", taskKey(task.id));
+    if (!run) {
+      // The first plan is being written, or it failed.
+      var key = taskKey(task.id);
+      runStatusLine(panel, key);
+      if (!state.runBusy[key]) {
+        var actions = el("div", "actions");
+        actions.appendChild(button("Try again", "btn", function () { planTask(task.id, null, ""); }));
+        actions.appendChild(button("Close", "btn subtle", function () { delete state.planOpen[task.id]; delete state.runMsg[key]; render(); }));
+        panel.appendChild(actions);
+      }
+      return panel;
+    }
+    planBody(panel, run);
+    plannedControls(panel, run, where, false);
+    if (!state.runBusy[runKey(run)]) {
+      var foot = el("div", "actions");
+      foot.appendChild(button("Hide", "btn subtle", function () { delete state.planOpen[task.id]; render(); }));
+      panel.appendChild(foot);
+    }
+    return panel;
+  }
+
+  // Jumps to a run in Work and opens it.
+  function goToRun(run) {
+    clearSearch();
+    state.view = "work";
+    if (state.filter !== "all" && state.filter !== run.space) {
+      state.filter = "all";
+      writePref("desk.space", "all");
+    }
+    state.runOpen[run.id] = true;
+    markSeen(run.id);
+    render();
+    var card = onPage('[data-run="' + run.id + '"]');
+    window.scrollTo(0, 0);
+    if (!card) return;
+    card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    card.classList.add("flash");
+    setTimeout(function () { card.classList.remove("flash"); }, 2200);
+  }
+
+  // ----- Work -----
+
+  // The activity of a run, read when its fold is first opened (again only if the run moved on while it was working).
+  async function ensureEvents(run, force) {
+    var cur = state.runEvents[run.id];
+    if (cur && cur.loading) return;
+    if (cur && !cur.error) {
+      if (!RUN_ACTIVE[run.status] || cur.stamp === run.updated_at) return;
+    } else if (cur && !force) {
+      return;
+    }
+    var entry = { rows: cur ? cur.rows : null, loading: true, error: "", stamp: run.updated_at };
+    state.runEvents[run.id] = entry;
+    try {
+      var res = await sb.from("run_events").select("id, run_id, at, kind, text, model, cost_usd").eq("run_id", run.id).order("id", { ascending: true }).limit(200);
+      if (res.error) entry.error = "The activity could not be loaded.";
+      else entry.rows = res.data || [];
+    } catch (_) {
+      entry.error = "The activity could not be loaded.";
+    }
+    entry.loading = false;
+    render();
+  }
+
+  function activityFold(run) {
+    var fold = el("details", "run-activity");
+    fold.appendChild(el("summary", null, "Activity"));
+    var inner = foldIn(fold);
+    var cur = state.runEvents[run.id];
+    if (!cur || (cur.loading && !cur.rows)) {
+      var wait = el("p", "fine", "Loading...");
+      wait.setAttribute("role", "status");
+      inner.appendChild(wait);
+    } else if (cur.error) {
+      var bad = el("p", "error", cur.error);
+      bad.setAttribute("role", "alert");
+      inner.appendChild(bad);
+    } else if (!cur.rows.length) {
+      inner.appendChild(el("p", "empty", "Nothing yet."));
+    } else {
+      var ul = el("ul", "run-events");
+      cur.rows.forEach(function (ev) {
+        var li = el("li", "run-event run-ev-" + (typeof ev.kind === "string" ? ev.kind.replace(/[^a-z_]/g, "") : "note"));
+        li.appendChild(el("span", "run-ev-time", eventTime(ev.at)));
+        li.appendChild(el("span", "run-ev-text", ev.text === null || ev.text === undefined ? "" : String(ev.text)));
+        ul.appendChild(li);
+      });
+      inner.appendChild(ul);
+    }
+    fold.open = !!state.runAct[run.id];
+    fold.addEventListener("toggle", function () {
+      if (fold.open) { state.runAct[run.id] = true; ensureEvents(run, true); } else delete state.runAct[run.id];
+    });
+    if (state.runAct[run.id]) ensureEvents(run, false);
+    return fold;
+  }
+
+  // What the card shows when you open it.
+  function runDetails(run) {
+    var box = el("div", "run-open");
+    var key = runKey(run);
+    var busy = state.runBusy[key];
+    var steps = planSteps(run);
+    if (run.status === "planned") {
+      planBody(box, run);
+    } else if (steps.length) {
+      box.appendChild(label("Steps"));
+      box.appendChild(stepsList(steps));
+    }
+
+    if (run.status === "needs_you") {
+      var q = run.pending && run.pending.kind === "question" && typeof run.pending.text === "string" ? run.pending.text.trim() : "";
+      box.appendChild(label("It is asking you"));
+      box.appendChild(el("p", "gist pre run-question", q || "It is waiting for you."));
+      var ta = runBox(key, "work", "Your answer", "Write your answer");
+      boxWithLabel(box, ta, "Your answer");
+      ta.readOnly = !!busy;
+      runStatusLine(box, key);
+      var answer = button("Answer", "primary", function () { answerRun(run, ta.value); });
+      var refresh = function () { answer.disabled = !!busy || !trimmed(ta.value); };
+      ta._refresh = refresh;
+      refresh();
+      var ask = el("div", "actions");
+      ask.appendChild(answer);
+      box.appendChild(ask);
+    }
+
+    var result = typeof run.result === "string" ? run.result : "";
+    if (run.status === "failed") {
+      box.appendChild(label("What went wrong"));
+      box.appendChild(el("p", "error run-error pre", trimmed(run.error) || "It stopped without saying why."));
+    }
+    if (result.trim()) {
+      box.appendChild(label(run.status === "done" ? "Result" : "What it had so far"));
+      box.appendChild(el("p", "gist pre run-result", result));
+    }
+    var flags = textList(run.flags);
+    if (flags.length) { box.appendChild(label("Check these")); box.appendChild(bulletList(flags)); }
+    var links = (Array.isArray(run.outputs) ? run.outputs : []).map(function (o) {
+      var href = o && typeof o.url === "string" ? httpsLink(o.url.trim()) : null;
+      return href ? { href: href, label: typeof o.label === "string" && o.label.trim() ? o.label.trim() : F.host(href) } : null;
+    }).filter(Boolean);
+    if (links.length) {
+      box.appendChild(label("Links"));
+      var chips = el("p", "plan-links");
+      links.forEach(function (l) { chips.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
+      box.appendChild(chips);
+    }
+    if (trimmed(run.instructions)) {
+      box.appendChild(label("What you told it"));
+      box.appendChild(el("p", "gist pre", run.instructions));
+    }
+
+    box.appendChild(activityFold(run));
+
+    if (run.status === "planned") {
+      plannedControls(box, run, "work", true);
+    } else {
+      if (run.status !== "needs_you") runStatusLine(box, key);
+      var actions = el("div", "actions");
+      if (RUN_ACTIVE[run.status]) {
+        var stop = button("Stop", "btn subtle", function () { stopRun(run); });
+        stop.disabled = !!busy;
+        actions.appendChild(stop);
+      } else {
+        discardControl(run, actions, busy);
+      }
+      box.appendChild(actions);
+    }
+    return box;
+  }
+
+  function runCard(run) {
+    var node = el("article", "card run run-" + run.status);
+    node.setAttribute("data-run", run.id);
+    var top = el("div", "card-top");
+    top.appendChild(el("span", "tag tag-" + run.space, spaceLabel(run.space)));
+    top.appendChild(el("span", "pill run-st-" + run.status, RUN_STATUS[run.status] || String(run.status)));
+    top.appendChild(el("span", "meta run-cost", money(run.cost_usd)));
+    var finished = !RUN_ACTIVE[run.status] && run.status !== "planned";
+    if (finished) {
+      var secs = took(run);
+      if (secs) top.appendChild(el("span", "meta", "took " + secs));
+      if (run.finished_at) top.appendChild(el("span", "meta", ago(run.finished_at)));
+    }
+    node.appendChild(top);
+    node.appendChild(el("h3", "title", run.title || "Untitled run"));
+    if (run.status === "working" && trimmed(run.current_step)) node.appendChild(el("p", "reason run-step-line", trimmed(run.current_step)));
+
+    var fold = el("details", "message run-fold");
+    fold.appendChild(el("summary", null, "Details"));
+    foldIn(fold).appendChild(runDetails(run));
+    fold.open = !!state.runOpen[run.id];
+    fold.addEventListener("toggle", function () {
+      if (fold.open) { state.runOpen[run.id] = true; markSeen(run.id); renderCoverWork(); } else delete state.runOpen[run.id];
+    });
+    node.appendChild(fold);
+    return node;
+  }
+
+  function runGroup(id, name, rows) {
+    var box = el("div", "tsec");
+    box.setAttribute("data-group", id);
+    var head = el("div", "tsec-head");
+    head.appendChild(el("h3", "tsec-name", name));
+    head.appendChild(el("span", "count", String(rows.length)));
+    box.appendChild(head);
+    var body = el("div", "tsec-body run-list-body");
+    rows.forEach(function (r) { body.appendChild(runCard(r)); });
+    box.appendChild(body);
+    return box;
+  }
+
+  // The Work view; returns how many runs it shows.
+  function renderWork() {
+    var list = $("list-work");
+    list.textContent = "";
+    var mine = state.runs.filter(inFilter);
+    var now = new Date();
+    var month = mine.filter(function (r) {
+      var d = new Date(r.created_at);
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    });
+    var cost = 0;
+    month.forEach(function (r) { cost += Number(r.cost_usd) || 0; });
+    $("work-month").textContent = "This month: " + money(cost) + " across " + month.length + (month.length === 1 ? " run" : " runs");
+
+    var shown = needles.length ? mine.filter(function (r) { return hit(runParts(r)); }) : mine;
+    var newestFirst = function (a, b) { return (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0); };
+    var needs = shown.filter(function (r) { return r.status === "needs_you"; }).sort(newestFirst);
+    var rank = { working: 0, queued: 1, planned: 2 };
+    var going = shown.filter(function (r) { return rank[r.status] !== undefined; }).sort(function (a, b) {
+      return rank[a.status] - rank[b.status] || newestFirst(a, b);
+    });
+    var done = shown.filter(function (r) { return r.status === "done" || r.status === "failed" || r.status === "stopped"; }).sort(function (a, b) {
+      return (Date.parse(b.finished_at || b.updated_at) || 0) - (Date.parse(a.finished_at || a.updated_at) || 0);
+    }).slice(0, 20);
+    if (needs.length) list.appendChild(runGroup("needs", "Needs you", needs));
+    if (going.length) list.appendChild(runGroup("going", "In progress", going));
+    if (done.length) list.appendChild(runGroup("done", "Finished", done));
+    var count = needs.length + going.length + done.length;
+    if (!count && !needles.length) list.appendChild(el("p", "empty", "Nothing is running. Press Plan on a task to have the Desk do it in the background."));
+    return count;
+  }
+
+  // ----- Today -----
+
+  // Runs that need you or are on their way, and runs that finished in the last 24 hours that you have not opened yet.
+  function coverRuns() {
+    var cutoff = Date.now() - DAY;
+    var rank = { needs_you: 0, working: 1, queued: 2 };
+    return state.runs.filter(function (r) {
+      if (!inFilter(r) || !hit(runParts(r))) return false;
+      if (RUN_ACTIVE[r.status]) return true;
+      if (r.status !== "done" && r.status !== "failed") return false;
+      return (Date.parse(r.finished_at || r.updated_at) || 0) >= cutoff && !state.runSeen[r.id];
+    }).sort(function (a, b) {
+      var ra = rank[a.status] === undefined ? 3 : rank[a.status];
+      var rb = rank[b.status] === undefined ? 3 : rank[b.status];
+      return ra - rb || (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0);
+    });
+  }
+
+  function renderCoverWork() {
+    var box = $("cv-work");
+    var rows = coverRuns();
+    box.hidden = !rows.length;
+    box.textContent = "";
+    if (!rows.length) return 0;
+    var head = el("div", "tsec-head");
+    head.appendChild(el("h2", "tsec-name", "Work in progress"));
+    head.appendChild(el("span", "count", String(rows.length)));
+    box.appendChild(head);
+    var body = el("div", "tsec-body cv-pad");
+    var ul = el("ul", "cv-runs");
+    rows.slice(0, 6).forEach(function (r) {
+      var li = el("li", "cv-run");
+      li.setAttribute("data-cover-run", r.id);
+      li.appendChild(button(r.title || "Untitled run", "ref cv-ref", function () { goToRun(r); }));
+      li.appendChild(el("span", "pill run-st-" + r.status, RUN_STATUS[r.status] || String(r.status)));
+      if (r.status === "working" && trimmed(r.current_step)) li.appendChild(el("span", "cv-step", trimmed(r.current_step)));
+      ul.appendChild(li);
+    });
+    body.appendChild(ul);
+    box.appendChild(body);
+    coverFoot(box, "All work", "work");
+    return Math.min(rows.length, 6);
+  }
+
   // ---------- Data ----------
 
   function index(rows, keyOf) {
@@ -3227,8 +3922,9 @@
           .limit(500),
         sb.from("cover_reviews").select("space, review, points, written_at"),
         sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at"),
+        sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50),
       ]);
-      var failed = results.filter(function (r) { return r.error; })[0];
+      var failed = results.slice(0, 9).filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
 
       state.channels = index(results[1].data, function (c) { return c.space + ":" + c.slack_channel_id; });
@@ -3240,6 +3936,9 @@
       state.notes = (results[6].data || []).concat(state.notes.filter(function (n) { return n.pending; }));
       state.covers = mergeCovers(results[7].data || []);
       state.starts = mergeStarts(results[8].data || []);
+      // The runs are extra: if they cannot be read the rest of the Desk still loads, with the runs it had.
+      if (!results[9].error) state.runs = mergeRuns(results[9].data || []);
+      syncRunPoll();
       var items = results[0].data || [];
       state.people = await loadPeople(items);
       announceNew(items);
@@ -3344,6 +4043,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "cover_reviews" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "runs" }, loadRunsSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }
         else setLive("Reconnecting", false);
@@ -3524,6 +4224,12 @@
         state.notes = [];
         state.covers = [];
         state.starts = [];
+        state.runs = [];
+        state.runBusy = {};
+        state.runMsg = {};
+        state.runEvents = {};
+        state.planOpen = {};
+        syncRunPoll();
         state.sendFlow = {};
         state.sent = {};
         state.seen = null;

@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="24">
+  <meta name="desk-version" content="25">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=24">
+  <link rel="stylesheet" href="style.css?v=25">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -54,6 +54,7 @@
         <div class="today-grid">
           <div class="today-col">
             <div id="cv-next" class="tsec cv-block"></div>
+            <div id="cv-work" class="tsec cv-block" hidden></div>
             <div id="cv-tasks" class="tsec cv-block"></div>
           </div>
           <div class="today-col">
@@ -123,6 +124,12 @@
             </details>
           </div>
         </div>
+      </section>
+
+      <section aria-labelledby="h-work" data-view="work">
+        <h2 id="h-work">Work</h2>
+        <p id="work-month" class="fine work-month"></p>
+        <div id="list-work"></div>
       </section>
 
       <section aria-labelledby="h-meetings" data-view="meetings">
@@ -265,9 +272,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=24"></script>
-  <script src="config.js?v=24"></script>
-  <script src="format.js?v=24"></script>
-  <script src="app.js?v=24"></script>
+  <script src="vendor/supabase-2.119.0.js?v=25"></script>
+  <script src="config.js?v=25"></script>
+  <script src="format.js?v=25"></script>
+  <script src="app.js?v=25"></script>
 </body>
 </html>
