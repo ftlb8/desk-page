@@ -65,6 +65,7 @@
     runEvents: {},    // run id -> { rows, loading, error, stamp }
     runBusy: {},      // "run:ID" / "task:ID" -> the call on its way (plan, rewrite, start, answer, stop, discard)
     runMsg: {},       // "run:ID" / "task:ID" -> the plain error from the last call
+    runHist: {},      // run ids whose "Earlier answers" fold you opened
     runAsk: {},       // runs where you are being asked about discarding
     runGone: {},      // run id -> when you discarded it, so an older load does not bring it back
     runSeen: readSeen(), // finished runs you opened in this browser session
@@ -2904,17 +2905,29 @@
     saved.box.scrollTop = saved.top;
   }
 
-  async function copyDraft(key, ta) {
+  // Copies a draft. `ta` is the draft box; for a run's draft it is the block that shows it and `text` is the whole text.
+  async function copyDraft(key, ta, text) {
     var done = false;
+    var words = text === undefined ? ta.value : text;
     try {
       if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("no clipboard");
-      await navigator.clipboard.writeText(ta.value);
+      await navigator.clipboard.writeText(words);
       done = true;
     } catch (_) {
       // No clipboard here: select the words so you can copy them yourself.
-      ta.focus();
-      ta.select();
-      try { done = document.execCommand("copy"); } catch (__) { done = false; }
+      try {
+        if (text === undefined) {
+          ta.focus();
+          ta.select();
+        } else {
+          var range = document.createRange();
+          range.selectNodeContents(ta);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        done = document.execCommand("copy");
+      } catch (__) { done = false; }
     }
     state.copied[key] = done ? "done" : "select";
     render();
@@ -3213,12 +3226,12 @@
   // Everything a run says (plan, step, question, result, flags, events) was written by a model from other people's
   // content. It is shown as plain text only; the one exception is a link in `outputs`, and only when it is https.
 
-  var RUN_COLUMNS = "id, space, task_id, title, status, plan, instructions, current_step, pending, result, flags, outputs, error, cost_usd, created_at, started_at, updated_at, finished_at";
+  var RUN_COLUMNS = "id, space, task_id, title, status, plan, instructions, current_step, pending, result, drafts, follow_ups, history, flags, outputs, error, cost_usd, created_at, started_at, updated_at, finished_at";
   var RUN_FAIL = "That did not work. Try again in a minute.";
   var RUN_STATUS = { planned: "Planned", queued: "Waiting", working: "Working", needs_you: "Needs you", done: "Done", stopped: "Stopped", failed: "Failed" };
   var RUN_ACTIVE = { queued: true, working: true, needs_you: true };
   var RUN_SIZE = { simple: "Quick", medium: "Standard", complex: "Deep" };
-  var RUN_BUSY = { plan: "Writing the plan...", rewrite: "Writing the plan...", start: "Starting...", answer: "Sending your answer...", stop: "Stopping...", discard: "Discarding..." };
+  var RUN_BUSY = { plan: "Writing the plan...", rewrite: "Writing the plan...", start: "Starting...", answer: "Sending your answer...", follow_up: "Sending your follow-up...", stop: "Stopping...", discard: "Discarding..." };
   var RUN_MARK = { done: "✓", doing: "→", skipped: "–" };
   var RUN_MARK_WORDS = { done: "Done: ", doing: "In progress: ", skipped: "Skipped: " };
   var runBoxes = {}; // the text boxes of runs, kept between redraws so typing is never lost
@@ -3235,6 +3248,7 @@
   }
 
   function runKey(run) { return "run:" + run.id; }
+  function followKey(run) { return "run:" + run.id + "|followup"; }
   function taskKey(taskId) { return "task:" + taskId; }
 
   function runsOfTask(taskId) {
@@ -3275,7 +3289,7 @@
   }
 
   function runParts(run) {
-    var parts = [run.title, run.result, RUN_STATUS[run.status], run.status, spaceLabel(run.space)];
+    var parts = [run.title, richPlain(run.result), RUN_STATUS[run.status], run.status, spaceLabel(run.space)];
     if (run.status === "queued") parts.push("queued");
     return parts;
   }
@@ -3305,6 +3319,9 @@
     delete state.runAct[id];
     delete state.runEvents[id];
     delete state.runAsk[id];
+    delete state.runHist[id];
+    delete state.runBusy[followKey({ id: id })];
+    delete state.runMsg[followKey({ id: id })];
     state.runGone[id] = Date.now();
     forgetBoxes(id);
     syncRunPoll();
@@ -3416,6 +3433,14 @@
     }
   }
 
+  async function askFollowUp(run, text) {
+    if (!trimmed(text)) return;
+    if (await runCall(followKey(run), "follow_up", { action: "follow_up", run_id: run.id, text: trimmed(text) })) {
+      forgetBoxes(run.id);
+      render();
+    }
+  }
+
   function stopRun(run) {
     return runCall(runKey(run), "stop", { action: "stop", run_id: run.id });
   }
@@ -3479,6 +3504,221 @@
     var ul = el("ul", "run-list");
     items.forEach(function (t) { ul.appendChild(el("li", null, t)); });
     return ul;
+  }
+
+  // ----- the text a run writes -----
+  // A small, strict reader for the light format the run result uses: "## " heading, "- " bullets, **bold**, [name](https://...).
+  // It builds elements and text nodes only. Anything it does not know (HTML, other markdown, unbalanced marks) stays as text.
+
+  // The words of a result without the marks, for search.
+  function richPlain(text) {
+    if (typeof text !== "string") return "";
+    return text.replace(/\[([^\[\]]*)\]\(([^()\s]*)\)/g, "$1").replace(/\*\*/g, "").replace(/^(## |- )/gm, "");
+  }
+
+  function richLink(parent, label, url) {
+    var href = httpsLink(String(url).trim());
+    if (!href) { parent.appendChild(document.createTextNode(label)); return; }
+    var a = linkTo(href, label, "rt-link");
+    a.title = F.host(href);
+    try {
+      var u = new URL(href);
+      if (u.hostname === "www.google.com" && u.pathname.indexOf("/maps") === 0) a.className = "rt-link rt-map";
+    } catch (_) { /* no marker */ }
+    parent.appendChild(a);
+  }
+
+  function richInline(parent, s, inBold) {
+    var text = "";
+    var flush = function () { if (text) { parent.appendChild(document.createTextNode(text)); text = ""; } };
+    var i = 0;
+    while (i < s.length) {
+      var ch = s.charAt(i);
+      if (ch === "*" && s.charAt(i + 1) === "*" && !inBold) {
+        var end = s.indexOf("**", i + 2);
+        if (end > i + 2) {
+          flush();
+          var strong = document.createElement("strong");
+          richInline(strong, s.slice(i + 2, end), true);
+          parent.appendChild(strong);
+          i = end + 2;
+          continue;
+        }
+      } else if (ch === "[") {
+        var close = s.indexOf("]", i + 1);
+        if (close > i + 1 && s.charAt(close + 1) === "(" && s.slice(i + 1, close).indexOf("[") < 0) {
+          // The address runs to the matching ")" (an address may hold pairs of brackets) and holds no space.
+          var depth = 1;
+          var stop = close + 2;
+          while (stop < s.length && depth > 0 && !/\s/.test(s.charAt(stop))) {
+            if (s.charAt(stop) === "(") depth++;
+            else if (s.charAt(stop) === ")") depth--;
+            if (depth > 0) stop++;
+          }
+          if (depth === 0) {
+            flush();
+            richLink(parent, s.slice(i + 1, close), s.slice(close + 2, stop));
+            i = stop + 1;
+            continue;
+          }
+        }
+      }
+      text += ch;
+      i++;
+    }
+    flush();
+  }
+
+  // Lines of one paragraph, with the line breaks kept.
+  function richLines(parent, lines) {
+    lines.forEach(function (line, n) {
+      if (n) parent.appendChild(document.createElement("br"));
+      richInline(parent, line, false);
+    });
+  }
+
+  function renderRichText(text) {
+    var frag = document.createDocumentFragment();
+    if (typeof text !== "string" || !text) return frag;
+    try {
+      var lines = text.replace(/\r\n?/g, "\n").split("\n");
+      var para = [];
+      var list = null;
+      var endPara = function () {
+        if (para.length) { var p = document.createElement("p"); richLines(p, para); frag.appendChild(p); para = []; }
+      };
+      lines.forEach(function (raw) {
+        var line = raw.replace(/\s+$/, "");
+        if (!line.trim()) { endPara(); list = null; return; }
+        if (line.indexOf("## ") === 0 && line.slice(3).trim()) {
+          endPara(); list = null;
+          var h = document.createElement("h4");
+          h.className = "rt-h";
+          richInline(h, line.slice(3).trim(), false);
+          frag.appendChild(h);
+        } else if (line.indexOf("- ") === 0 && line.slice(2).trim()) {
+          endPara();
+          if (!list) { list = document.createElement("ul"); list.className = "rt-list"; frag.appendChild(list); }
+          var li = document.createElement("li");
+          richInline(li, line.slice(2).trim(), false);
+          list.appendChild(li);
+        } else {
+          list = null;
+          para.push(line);
+        }
+      });
+      endPara();
+    } catch (_) {
+      frag = document.createDocumentFragment();
+      var p = document.createElement("p");
+      p.textContent = text;
+      frag.appendChild(p);
+    }
+    return frag;
+  }
+
+  function richBox(text, className) {
+    var box = el("div", "rich " + (className || ""));
+    box.appendChild(renderRichText(text));
+    return box;
+  }
+
+  // The drafts a run wrote for you to send or paste yourself: each with its label, the whole text and Copy.
+  function runDrafts(run) {
+    return draftList(run.drafts);
+  }
+
+  function draftList(value) {
+    return (Array.isArray(value) ? value : []).map(function (d) {
+      var t = d && typeof d.text === "string" ? d.text : "";
+      if (!t.trim()) return null;
+      return { label: typeof d.label === "string" && d.label.trim() ? d.label.trim() : "Draft", text: t };
+    }).filter(Boolean);
+  }
+
+  function draftsBlock(box, drafts, keyBase) {
+    if (!drafts.length) return;
+    box.appendChild(label("Drafts"));
+    drafts.forEach(function (d, n) {
+      var key = keyBase + ":" + n;
+      var wrap = el("div", "run-draft");
+      var head = el("div", "run-draft-head");
+      head.appendChild(el("span", "run-draft-label", d.label));
+      var pre = el("pre", "run-draft-text", d.text);
+      var mark = state.copied[key];
+      var copy = button(mark === "done" ? "Copied" : mark === "select" ? "Selected, now copy it" : "Copy", "btn", function () { copyDraft(key, pre, d.text); });
+      copy.setAttribute("aria-label", "Copy draft: " + d.label);
+      head.appendChild(copy);
+      wrap.appendChild(head);
+      wrap.appendChild(pre);
+      box.appendChild(wrap);
+    });
+  }
+
+  // One earlier answer: its date, what you asked, the result and its drafts.
+  function earlierAnswer(run, entry, n) {
+    var wrap = el("div", "run-earlier");
+    var when = entry && typeof entry.finished_at === "string" ? noteDate(entry.finished_at) : "";
+    wrap.appendChild(el("p", "run-earlier-head", when ? "Answer of " + when : "Earlier answer"));
+    var asked = entry && typeof entry.asked === "string" ? entry.asked.trim() : "";
+    if (asked) wrap.appendChild(el("blockquote", "run-asked", asked));
+    var result = entry && typeof entry.result === "string" ? entry.result : "";
+    if (result.trim()) wrap.appendChild(richBox(result, "run-result"));
+    else wrap.appendChild(el("p", "fine", "It did not write a result."));
+    draftsBlock(wrap, draftList(entry && entry.drafts), "rd:" + run.id + ":h" + n);
+    return wrap;
+  }
+
+  function historyOf(run) {
+    return (Array.isArray(run.history) ? run.history : []).filter(function (h) { return h && typeof h === "object"; });
+  }
+
+  function earlierFold(run, list) {
+    var fold = el("details", "run-earlier-fold");
+    fold.setAttribute("data-earlier", run.id);
+    fold.appendChild(el("summary", null, "Earlier answers (" + list.length + ")"));
+    var inner = foldIn(fold);
+    list.forEach(function (h) { inner.appendChild(earlierAnswer(run, h, list.indexOf(h))); });
+    fold.open = !!state.runHist[run.id];
+    fold.addEventListener("toggle", function () {
+      if (fold.open) state.runHist[run.id] = true; else delete state.runHist[run.id];
+    });
+    return fold;
+  }
+
+  // "Ask a follow-up": the suggestions as chips (they fill the box, they send nothing), the box and Ask.
+  function followUpBlock(box, run) {
+    var key = followKey(run);
+    var busy = !!state.runBusy[key];
+    var wrap = el("div", "run-follow");
+    wrap.setAttribute("data-follow", run.id);
+    var ta = runBox(runKey(run), "followup", "Ask a follow-up", "What should it look at next, or change?");
+    wrap.appendChild(el("p", "owed-head", "Ask a follow-up"));
+    var ideas = textList(run.follow_ups).slice(0, 6);
+    if (ideas.length) {
+      var chips = el("div", "run-ideas");
+      ideas.forEach(function (t) {
+        var c = button(t, "chip idea", function () {
+          ta.value = t;
+          if (ta._refresh) ta._refresh();
+          ta.focus();
+        });
+        c.disabled = busy;
+        chips.appendChild(c);
+      });
+      wrap.appendChild(chips);
+    }
+    ta.readOnly = busy;
+    wrap.appendChild(ta);
+    runStatusLine(wrap, key);
+    var ask = button("Ask", "primary", function () { askFollowUp(run, ta.value); });
+    var refresh = function () { ask.disabled = busy || !trimmed(ta.value); };
+    ta._refresh = refresh;
+    refresh();
+    var actions = el("div", "actions");
+    actions.appendChild(ask);
+    wrap.appendChild(actions);
+    box.appendChild(wrap);
   }
 
   // What the plan says: summary, steps, what it will look at, what you get, and what it cannot do.
@@ -3692,8 +3932,14 @@
   function runDetails(run) {
     var box = el("div", "run-open");
     var key = runKey(run);
-    var busy = state.runBusy[key];
+    var busy = state.runBusy[key] || state.runBusy[followKey(run)];
     var steps = planSteps(run);
+    var history = historyOf(run);
+    var following = RUN_ACTIVE[run.status] && history.length > 0;
+    if (following) {
+      box.appendChild(label("The answer you are following up on"));
+      box.appendChild(earlierAnswer(run, history[history.length - 1], history.length - 1));
+    }
     if (run.status === "planned") {
       planBody(box, run);
     } else if (steps.length) {
@@ -3725,8 +3971,9 @@
     }
     if (result.trim()) {
       box.appendChild(label(run.status === "done" ? "Result" : "What it had so far"));
-      box.appendChild(el("p", "gist pre run-result", result));
+      box.appendChild(richBox(result, "gist run-result"));
     }
+    draftsBlock(box, runDrafts(run), "rd:" + run.id);
     var flags = textList(run.flags);
     if (flags.length) { box.appendChild(label("Check these")); box.appendChild(bulletList(flags)); }
     var links = (Array.isArray(run.outputs) ? run.outputs : []).map(function (o) {
@@ -3744,6 +3991,9 @@
       box.appendChild(el("p", "gist pre", run.instructions));
     }
 
+    if (run.status === "done") followUpBlock(box, run);
+    var older = following ? history.slice(0, -1) : history;
+    if (older.length) box.appendChild(earlierFold(run, older));
     box.appendChild(activityFold(run));
 
     if (run.status === "planned") {
@@ -3778,7 +4028,7 @@
     }
     node.appendChild(top);
     node.appendChild(el("h3", "title", run.title || "Untitled run"));
-    if (run.status === "working" && trimmed(run.current_step)) node.appendChild(el("p", "reason run-step-line", trimmed(run.current_step)));
+    if ((run.status === "working" || run.status === "queued") && trimmed(run.current_step)) node.appendChild(el("p", "reason run-step-line", trimmed(run.current_step)));
 
     var fold = el("details", "message run-fold");
     fold.appendChild(el("summary", null, "Details"));
@@ -4227,6 +4477,7 @@
         state.runs = [];
         state.runBusy = {};
         state.runMsg = {};
+        state.runHist = {};
         state.runEvents = {};
         state.planOpen = {};
         syncRunPoll();
