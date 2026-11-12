@@ -32,6 +32,10 @@
     meetings: [],
     openMeetings: {}, // ids of meetings whose details you opened
     openPlans: {},    // ids of plans whose details you opened
+    openTasks: {},    // ids of tasks you expanded in the list
+    openSections: { today: true, week: true, weeks: false, later: false }, // task sections you opened or closed
+    folds: {},        // the fixed folds (tray, Later, Closed, Decisions, ...) you opened
+    query: "",        // what is typed in the search box
     reviewing: {},    // ids of plans whose review is running
     doneSuggestions: {}, // review suggestions that became tasks this session, keyed by plan id and text
     projects: [],
@@ -223,11 +227,68 @@
     return "closed";
   }
 
-  function byPriority(a, b) {
-    if (b.urgency !== a.urgency) return b.urgency - a.urgency;
-    var ta = (a.messages && a.messages.occurred_at) || a.created_at;
-    var tb = (b.messages && b.messages.occurred_at) || b.created_at;
-    return ta < tb ? -1 : ta > tb ? 1 : 0; // the one waiting longest comes first
+  // When the thing happened: the message's time, or else when the Desk made the item.
+  function stamp(item) {
+    var t = Date.parse((item.messages && item.messages.occurred_at) || item.created_at);
+    return isNaN(t) ? 0 : t;
+  }
+
+  function newest(a, b) {
+    return stamp(b) - stamp(a);
+  }
+
+  // ---------- Search ----------
+
+  // Lower case with accents removed, so "Sao" finds "São".
+  function plain(text) {
+    return String(text === undefined || text === null ? "" : text).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  }
+
+  var needles = []; // the words typed in the search box, for the draw in progress
+
+  // True when every typed word appears somewhere in the given pieces of text.
+  function hit(parts) {
+    if (!needles.length) return true;
+    var text = plain(parts.filter(function (x) { return x !== undefined && x !== null && x !== ""; }).join(" \n "));
+    return needles.every(function (w) { return text.indexOf(w) >= 0; });
+  }
+
+  function itemParts(item) {
+    var parts = [item.title, item.summary, item.reason, item.theme, item.owed_to];
+    if (item.messages) {
+      var m = item.messages;
+      parts.push(authorLabel(item), whereLabel(item), m.subject, m.body);
+    }
+    sourcesOf(item).forEach(function (x) { parts.push(x.label, x.quote, x.detail); });
+    return parts;
+  }
+
+  function taskParts(task) {
+    var parts = [task.title, task.context, task.notes, projectName(task)];
+    (Array.isArray(task.steps) ? task.steps : []).forEach(function (x) { parts.push(x && x.text); });
+    (Array.isArray(task.links) ? task.links : []).forEach(function (x) { parts.push(x && x.label); });
+    return parts;
+  }
+
+  function planParts(p) {
+    var review = p.review && typeof p.review === "object" ? p.review : {};
+    var parts = [p.name, p.what, p.next_step, p.depends_on, p.people, p.tools, p.standing];
+    (Array.isArray(review.next_steps) ? review.next_steps : []).forEach(function (x) { parts.push(x); });
+    (Array.isArray(review.suggested_tasks) ? review.suggested_tasks : []).forEach(function (x) { parts.push(x); });
+    return parts;
+  }
+
+  function meetingParts(m) {
+    var parts = [m.title, m.brief];
+    (Array.isArray(m.attendees) ? m.attendees : []).forEach(function (a) { if (a) parts.push(personName(a)); });
+    openOwed(m).forEach(function (o) { parts.push(o.title); });
+    return parts;
+  }
+
+  function clearSearch() {
+    clearTimeout(state.searchTimer);
+    state.query = "";
+    $("search").value = "";
   }
 
   // ---------- Rendering ----------
@@ -278,11 +339,19 @@
     });
   }
 
+  // What you see when a fold is open. Every fold uses this one box, so open content always looks the same.
+  function foldIn(details) {
+    var box = el("div", "fold-body");
+    details.appendChild(box);
+    return box;
+  }
+
   // A Google Docs, Sheets or Slides notice: the file, each comment, and a link to it. Nothing else.
   function docView(item, doc) {
     var box = el("details", "message doc");
     box.appendChild(el("summary", null, doc.comments.length === 1 ? "1 comment" : doc.comments.length + " comments"));
-    box.appendChild(el("p", "file", doc.file));
+    var inner = foldIn(box);
+    inner.appendChild(el("p", "file", doc.file));
     doc.comments.forEach(function (c) {
       var one = el("div", "comment");
       var head = el("p", "comment-head", c.author);
@@ -290,7 +359,7 @@
       one.appendChild(head);
       appendBlocks(one, F.emailBlocks(c.text));
       if (c.url) one.appendChild(linkTo(withAccount(c.url, item), "Open comment ↗", "chip"));
-      box.appendChild(one);
+      inner.appendChild(one);
     });
     return box;
   }
@@ -301,6 +370,7 @@
     var m = item.messages;
     var more = el("details", "message");
     more.appendChild(el("summary", null, item.lane === "commitment" ? "What you wrote" : isEmail(item) ? "Original email" : "Original message"));
+    var inner = foldIn(more);
     var body = el("div", "body");
     if (!isEmail(item)) {
       appendBlocks(body, F.slackBlocks(m.body, {
@@ -308,13 +378,13 @@
         person: function (id) { var p = state.people[item.space + ":" + id]; return p && p.name ? p.name : null; },
         channel: function (id) { var c = state.channels[item.space + ":" + id]; return c && c.name ? c.name : null; },
       }));
-      more.appendChild(body);
+      inner.appendChild(body);
       return more;
     }
-    if (m.subject) more.appendChild(el("p", "subject", m.subject));
+    if (m.subject) inner.appendChild(el("p", "subject", m.subject));
     var cleaned = F.cleanEmail(m.body);
     appendBlocks(body, F.emailBlocks(cleaned.text));
-    more.appendChild(body);
+    inner.appendChild(body);
     if (cleaned.cut) {
       var full = el("p", "body raw", cleaned.full);
       full.hidden = true;
@@ -323,8 +393,8 @@
         body.hidden = !full.hidden;
         toggle.textContent = full.hidden ? "Show everything" : "Show the short version";
       });
-      more.appendChild(full);
-      more.appendChild(toggle);
+      inner.appendChild(full);
+      inner.appendChild(toggle);
     }
     return more;
   }
@@ -391,6 +461,7 @@
 
     var top = el("div", "card-top");
     top.appendChild(el("span", "tag tag-" + item.space, spaceLabel(item.space)));
+    if (kind === "commit" && item.theme) top.appendChild(el("span", "kind theme-tag", item.theme));
     var promise = item.lane === "commitment";
     var due = promise ? dueLabel(item.due_on) : null;
     if (due && kind !== "closed") {
@@ -430,6 +501,7 @@
       if (told.length) {
         var said = el("details", "message");
         said.appendChild(el("summary", null, told.length > 1 ? "From the meeting · " + told.length + " sources" : "From the notes"));
+        var saidIn = foldIn(said);
         told.forEach(function (x) {
           var block = el("div", "said");
           var day = meetingDay(x.meeting_on);
@@ -437,7 +509,7 @@
           if (x.quote) block.appendChild(el("p", "body", x.quote));
           // What the summary above already says is not repeated.
           if (x.detail && x.detail !== item.summary) block.appendChild(el("p", "said-detail", x.detail));
-          said.appendChild(block);
+          saidIn.appendChild(block);
         });
         node.appendChild(said);
       }
@@ -506,13 +578,13 @@
     list.textContent = "";
     $(countId).textContent = items.length ? String(items.length) : "";
     if (!items.length) {
-      if (emptyText) list.appendChild(el("p", "empty", emptyText));
+      if (emptyText && !needles.length) list.appendChild(el("p", "empty", emptyText));
       return;
     }
     items.forEach(function (item) { list.appendChild(card(item, kind)); });
   }
 
-  // Suggestions and decisions are shown under the project or theme they belong to.
+  // Decisions are shown under the theme they belong to.
   function themeBlocks(list, items, kind) {
     var themes = {};
     var order = [];
@@ -539,13 +611,12 @@
     themeBlocks(list, items, kind);
   }
 
-  // The tray of suggested tasks: promises first, then the to-dos, each under its theme.
+  // The tray of suggested tasks: one list, newest first. The theme shows as a small tag on each card.
   function fillSuggested(items) {
     var list = $("list-suggested");
     list.textContent = "";
     $("n-suggested").textContent = items.length ? String(items.length) : "";
-    themeBlocks(list, items.filter(isPromise), "commit");
-    themeBlocks(list, items.filter(function (i) { return !isPromise(i); }), "commit");
+    items.forEach(function (item) { list.appendChild(card(item, "commit")); });
   }
 
   // Which view an item lives in: suggested tasks in Tasks, decisions in Planning, the rest in Inbox.
@@ -554,11 +625,18 @@
     return item.kind === "decision" ? "planning" : "tasks";
   }
 
-  function isPromise(item) {
-    return item.kind === "promise" || (!item.kind && item.lane === "commitment");
+  // The folds that are part of the page itself. Your choice is remembered; while a search is on,
+  // a fold that holds a match is shown open.
+  var FOLDS = ["box-suggested", "box-later-sug", "box-closed-sug", "box-decisions", "box-later", "box-closed", "box-tasks-done"];
+
+  function setFold(id, hasMatch) {
+    $(id).open = needles.length ? !!hasMatch : !!state.folds[id];
   }
 
   function render() {
+    needles = plain(state.query).split(/\s+/).filter(Boolean);
+    var searching = needles.length > 0;
+    var found = 0;
     var groups = { waiting: [], commit: [], decision: [], look: [], later: [], closed: [] };
     var waitingBySpace = {};
     state.items.forEach(function (item) {
@@ -567,18 +645,17 @@
       if (state.filter !== "all" && item.space !== state.filter) return;
       groups[b].push(item);
     });
+    var waitingCount = groups.waiting.length; // the tab count ignores the search
     // Later and Closed follow the section: suggestions in Tasks, decisions in Planning, everything else in Inbox.
     ["later", "closed"].forEach(function (k) {
       groups[k] = groups[k].filter(function (item) { return viewFor(item) === state.view; });
     });
-    groups.waiting.sort(byPriority);
-    groups.look.sort(byPriority);
-    groups.commit.sort(function (a, b) {
-      if (isPromise(a) !== isPromise(b)) return isPromise(a) ? -1 : 1; // promises first
-      if (a.due_on && b.due_on && a.due_on !== b.due_on) return a.due_on < b.due_on ? -1 : 1;
-      if (a.due_on !== b.due_on) return a.due_on ? -1 : 1; // dated promises first
-      return byPriority(a, b);
-    });
+    if (searching) {
+      Object.keys(groups).forEach(function (k) { groups[k] = groups[k].filter(function (item) { return hit(itemParts(item)); }); });
+    }
+    groups.waiting.sort(newest);
+    groups.look.sort(newest);
+    groups.commit.sort(newest);
     groups.later.sort(function (a, b) { return a.snooze_until < b.snooze_until ? -1 : 1; });
     groups.closed.sort(function (a, b) { return a.closed_at > b.closed_at ? -1 : 1; });
 
@@ -589,7 +666,7 @@
     fillByTheme("list-decisions", "n-decisions", groups.decision, "decision");
     $("box-decisions").hidden = !groups.decision.length;
     fill("list-look", "n-look", groups.look, "look", "Nothing else to look at.");
-    renderTasks();
+    var taskRows = renderTasks();
     // In Tasks, Later and Closed for the suggestions sit inside the tray; elsewhere they sit at the bottom.
     var inTasks = state.view === "tasks";
     fill("list-later", "n-later", inTasks ? [] : groups.later, "later", null);
@@ -598,19 +675,44 @@
     fill("list-closed-sug", "n-closed-sug", inTasks ? groups.closed : [], "closed", null);
     $("box-later-sug").hidden = !(inTasks && groups.later.length);
     $("box-closed-sug").hidden = !(inTasks && groups.closed.length);
-    document.querySelectorAll("[data-view]").forEach(function (section) {
-      section.hidden = section.getAttribute("data-view") !== state.view;
-    });
-    renderPlanning();
-    renderMeetings();
+    var planRows = renderPlanning();
+    var meetingCards = renderMeetings();
     var lists = state.view !== "meetings";
     $("box-later").hidden = !lists || inTasks || !groups.later.length;
     $("box-closed").hidden = !lists || inTasks || !groups.closed.length;
 
+    // What is on screen in this view, for "N found" and for the sentence when nothing matches.
+    found = groups.later.length + groups.closed.length;
+    if (state.view === "inbox") found += groups.waiting.length + groups.look.length;
+    else if (state.view === "tasks") found += groups.commit.length + taskRows;
+    else if (state.view === "planning") found += groups.decision.length + planRows;
+    else found += meetingCards;
+
+    document.querySelectorAll("[data-view]").forEach(function (section) {
+      section.hidden = section.getAttribute("data-view") !== state.view;
+    });
+    if (searching) { // a section with nothing that matches is hidden
+      if (!groups.waiting.length) $("list-waiting").parentElement.hidden = true;
+      if (!groups.look.length) $("list-look").parentElement.hidden = true;
+    }
+    setFold("box-suggested", groups.commit.length || groups.later.length || groups.closed.length);
+    setFold("box-later-sug", groups.later.length);
+    setFold("box-closed-sug", groups.closed.length);
+    setFold("box-decisions", groups.decision.length);
+    setFold("box-later", groups.later.length);
+    setFold("box-closed", groups.closed.length);
+    setFold("box-tasks-done", $("list-tasks-done").children.length);
+
+    var box = $("search-empty");
+    box.hidden = !(searching && !found);
+    if (!box.hidden) box.textContent = "Nothing here matches \u201c" + state.query.trim() + "\u201d.";
+    $("search-count").textContent = searching ? found + " found" : "";
+    $("search-clear").hidden = !$("search").value;
+
     var openTasks = state.tasks.filter(function (t) {
       return t.status === "open" && (state.filter === "all" || t.space === state.filter);
     }).length;
-    var counts = { inbox: groups.waiting.length, tasks: openTasks, meetings: meetingsLeftToday() };
+    var counts = { inbox: waitingCount, tasks: openTasks, meetings: meetingsLeftToday() };
     var views = $("views");
     views.textContent = "";
     VIEWS.forEach(function (v) {
@@ -713,6 +815,7 @@
   }
 
   function goToItem(item) {
+    clearSearch(); // what you were looking for may not match the search
     state.view = viewFor(item);
     writePref("desk.view", state.view);
     if (state.filter !== "all" && state.filter !== item.space) {
@@ -722,7 +825,12 @@
     render();
     var card = document.querySelector('[data-item="' + item.id + '"]');
     if (!card) return;
-    for (var p = card.parentElement; p; p = p.parentElement) if (p.tagName === "DETAILS") p.open = true;
+    for (var p = card.parentElement; p; p = p.parentElement) {
+      if (p.tagName === "DETAILS") {
+        p.open = true;
+        if (p.id) state.folds[p.id] = true; // stays open across redraws
+      }
+    }
     card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
     card.classList.add("flash");
     setTimeout(function () { card.classList.remove("flash"); }, 2200);
@@ -761,7 +869,8 @@
     if (m.brief || owed.length) {
       var fold = el("details", "message");
       fold.appendChild(el("summary", null, (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "")));
-      if (m.brief) fold.appendChild(el("p", "gist", m.brief));
+      var foldBox = foldIn(fold);
+      if (m.brief) foldBox.appendChild(el("p", "gist", m.brief));
       if (owed.length) {
         var box = el("div", "owed");
         box.appendChild(el("p", "owed-head", "What you owe"));
@@ -775,7 +884,7 @@
           });
           box.appendChild(row);
         });
-        fold.appendChild(box);
+        foldBox.appendChild(box);
       }
       // The page redraws now and then; remember which folds you opened so they stay open.
       fold.open = !!state.openMeetings[m.id];
@@ -804,6 +913,7 @@
     var days = {};
     var order = [];
     shownMeetings().forEach(function (m) {
+      if (needles.length && !hit(meetingParts(m))) return;
       var key = dayStart(meetingDate(m));
       var offset = Math.round((key - today) / DAY);
       if (offset < 0 || offset > 7) return;
@@ -814,9 +924,10 @@
     var left = meetingsLeftToday();
     $("n-meetings").textContent = left ? left + " to come today" : "";
     if (!order.length) {
-      list.appendChild(el("p", "empty", "You have no meetings in the next 7 days."));
-      return;
+      if (!needles.length) list.appendChild(el("p", "empty", "You have no meetings in the next 7 days."));
+      return 0;
     }
+    var cardsShown = 0;
     order.forEach(function (key) {
       var day = days[key];
       var name = day.offset === 0 ? "Today" : day.offset === 1 ? "Tomorrow"
@@ -829,19 +940,24 @@
       };
       var earlier = [];
       day.meetings.sort(byTime).forEach(function (m) {
+        cardsShown++;
         if (day.offset === 0 && meetingEnded(m, now)) earlier.push(m);
         else cards.appendChild(meetingCard(m, now));
       });
-      list.appendChild(cards);
+      if (cards.children.length) list.appendChild(cards);
       if (earlier.length) {
         var fold = el("details", "earlier");
-        fold.appendChild(el("summary", null, "Earlier today · " + earlier.length));
+        var head = el("summary", null, "Earlier today · " + earlier.length);
+        head.addEventListener("click", function () { state.folds.earlier = !fold.open; });
+        fold.appendChild(head);
         var inner = el("div", "list");
         earlier.forEach(function (m) { inner.appendChild(meetingCard(m, now)); });
         fold.appendChild(inner);
+        fold.open = needles.length ? true : !!state.folds.earlier;
         list.appendChild(fold);
       }
     });
+    return cardsShown;
   }
 
   // ---------- Planning ----------
@@ -963,29 +1079,30 @@
     }).filter(Boolean);
     var fold = el("details", "message");
     fold.appendChild(el("summary", null, "Details"));
-    if (p.what) fold.appendChild(el("p", "gist", p.what));
+    var inside = foldIn(fold);
+    if (p.what) inside.appendChild(el("p", "gist", p.what));
     if (p.standing) {
-      fold.appendChild(el("p", "owed-head", "Where it stands"));
-      fold.appendChild(el("p", "gist", p.standing));
+      inside.appendChild(el("p", "owed-head", "Where it stands"));
+      inside.appendChild(el("p", "gist", p.standing));
     }
-    if (p.reviewed_at) fold.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at))));
+    if (p.reviewed_at) inside.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at))));
     if (steps.length) {
-      fold.appendChild(el("p", "owed-head", "Suggested next steps"));
+      inside.appendChild(el("p", "owed-head", "Suggested next steps"));
       var ul = el("ul", "plan-steps");
       steps.forEach(function (t) { ul.appendChild(el("li", null, String(t))); });
-      fold.appendChild(ul);
+      inside.appendChild(ul);
     }
     if (suggested.length) {
-      fold.appendChild(el("p", "owed-head", "Suggested tasks"));
+      inside.appendChild(el("p", "owed-head", "Suggested tasks"));
       suggested.forEach(function (text) {
         var row = el("div", "plan-suggest");
         row.appendChild(el("span", "plan-suggest-text", text));
         row.appendChild(button("Add as task", "btn small", function () { suggestTask(p, text); }));
-        fold.appendChild(row);
+        inside.appendChild(row);
       });
     }
     if (sources.length) {
-      fold.appendChild(el("p", "owed-head", "From"));
+      inside.appendChild(el("p", "owed-head", "From"));
       sources.forEach(function (x) {
         var row = el("p", "plan-source");
         var href = httpsLink(x.url);
@@ -997,23 +1114,23 @@
         } else {
           row.appendChild(document.createTextNode(x.label + when));
         }
-        fold.appendChild(row);
+        inside.appendChild(row);
       });
     }
-    if (review.note) fold.appendChild(el("p", "fine", String(review.note)));
-    if (p.people) fold.appendChild(el("p", "reason", "With: " + p.people));
-    if (p.tools) fold.appendChild(el("p", "reason", "Tools: " + p.tools));
+    if (review.note) inside.appendChild(el("p", "fine", String(review.note)));
+    if (p.people) inside.appendChild(el("p", "reason", "With: " + p.people));
+    if (p.tools) inside.appendChild(el("p", "reason", "Tools: " + p.tools));
     if (links.length) {
       var box = el("p", "plan-links");
       links.forEach(function (l) { box.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
-      fold.appendChild(box);
+      inside.appendChild(box);
     }
     if (open.length) {
-      fold.appendChild(el("p", "owed-head", "Open tasks"));
+      inside.appendChild(el("p", "owed-head", "Open tasks"));
       open.forEach(function (t) {
         var row = el("div", "plan-task");
         row.appendChild(button(t.title, "ref", function () { openTask(t); }));
-        fold.appendChild(row);
+        inside.appendChild(row);
       });
     }
     fold.open = !!state.openPlans[p.id];
@@ -1046,20 +1163,20 @@
 
   function renderPlanning() {
     var visible = state.projects.filter(function (p) { return state.filter === "all" || p.space === state.filter; });
-    var plans = visible.filter(function (p) { return p.is_plan; }).sort(function (a, b) {
+    var plans = visible.filter(function (p) { return p.is_plan && hit(planParts(p)); }).sort(function (a, b) {
       return stageRank(a) - stageRank(b) || (String(a.name).toLowerCase() < String(b.name).toLowerCase() ? -1 : 1);
     });
     var list = $("list-plans");
     list.textContent = "";
     plans.forEach(function (p) { list.appendChild(planCard(p)); });
-    if (!plans.length) list.appendChild(el("p", "empty", "You have no plans here yet. Add one for anything that will take more than a single task."));
+    if (!plans.length && !needles.length) list.appendChild(el("p", "empty", "You have no plans here yet. Add one for anything that will take more than a single task."));
 
-    var others = visible.filter(function (p) { return !p.is_plan; });
+    var others = visible.filter(function (p) { return !p.is_plan && hit([p.name]); });
     var rest = $("list-projects");
     rest.textContent = "";
     $("box-projects").hidden = !others.length;
     others.forEach(function (p) {
-      var row = el("div", "task");
+      var row = el("div", "prow");
       var main = el("div", "task-main");
       main.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
       main.appendChild(el("span", null, p.name));
@@ -1069,6 +1186,7 @@
       row.appendChild(button("Make it a plan", "btn small", function () { makePlan(p); }));
       rest.appendChild(row);
     });
+    return plans.length + others.length;
   }
 
   var editingPlan = null; // the plan in the dialog; null while adding one
@@ -1087,6 +1205,7 @@
     $("pd-people").value = (p && p.people) || "";
     $("pd-tools").value = (p && p.tools) || "";
     $("pd-error").hidden = true;
+    $("pd-form").querySelector(".dlg-body").scrollTop = 0;
     var dialog = $("plan-dialog");
     if (!dialog.open) dialog.showModal();
   }
@@ -1148,9 +1267,10 @@
   var HORIZONS = [
     { id: "today", label: "Today" },
     { id: "week", label: "This week" },
+    { id: "weeks", label: "Next 2-3 weeks" },
     { id: "later", label: "Later" },
   ];
-  var REPEATS = { daily: "every day", weekly: "every week", biweekly: "every 2 weeks", monthly: "every month" };
+  var REPEAT_PILL = { daily: "daily", weekly: "weekly", biweekly: "every 2 weeks", monthly: "monthly" };
 
   function projectName(task) {
     return task.projects && task.projects.name ? task.projects.name : null;
@@ -1161,11 +1281,186 @@
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
 
+  // Whole days from today to a date ("2026-11-14"); negative when it has passed.
+  function daysFrom(day) {
+    var due = new Date(day + "T12:00:00");
+    var today = new Date(); today.setHours(12, 0, 0, 0);
+    return Math.round((due.getTime() - today.getTime()) / DAY);
+  }
+
+  function horizonOf(task) {
+    return HORIZONS.some(function (h) { return h.id === task.horizon; }) ? task.horizon : "week";
+  }
+
+  // The small due-date pill: "overdue 12d", "due today", "due tomorrow", "due Fri", "due 14 Nov".
+  function duePill(day) {
+    var n = daysFrom(day);
+    var d = new Date(day + "T12:00:00");
+    if (n < 0) return { text: "overdue " + (-n) + "d", tone: "pill-late" };
+    if (n === 0) return { text: "due today", tone: "pill-today" };
+    if (n === 1) return { text: "due tomorrow", tone: "" };
+    if (n <= 6) return { text: "due " + d.toLocaleDateString([], { weekday: "short" }), tone: "" };
+    return { text: "due " + shortDate(d), tone: "" };
+  }
+
+  // A sentence for a task that is long overdue.
+  function lateNote(task) {
+    if (task.status !== "open" || !task.due_on) return null;
+    var late = -daysFrom(task.due_on);
+    if (late < 7) return null;
+    var text = "Overdue by " + late + " days (was due " + shortDate(new Date(task.due_on + "T12:00:00")) + ").";
+    if (task.slips >= 2 && task.first_due_on) text += " First due " + shortDate(new Date(task.first_due_on + "T12:00:00")) + ".";
+    return text;
+  }
+
+  function pills(task) {
+    var open = task.status === "open";
+    var box = el("div", "pills");
+    box.appendChild(el("span", "pill tag-" + task.space, spaceLabel(task.space)));
+    if (projectName(task)) {
+      box.appendChild(button(projectName(task), "pill project-pill", function () {
+        state.project = task.project_id;
+        render();
+      }));
+    }
+    if (open && task.due_on) {
+      var due = duePill(task.due_on);
+      box.appendChild(el("span", "pill " + due.tone, due.text));
+    }
+    if (open && task.slips >= 2) box.appendChild(el("span", "pill pill-slip", "slipped " + task.slips + "x"));
+    if (task.repeat && REPEAT_PILL[task.repeat]) box.appendChild(el("span", "pill", "repeats " + REPEAT_PILL[task.repeat]));
+    var steps = Array.isArray(task.steps) ? task.steps : [];
+    if (steps.length && open) {
+      box.appendChild(el("span", "pill", steps.filter(function (x) { return x.done; }).length + "/" + steps.length + " steps"));
+    }
+    return box;
+  }
+
+  // The first line of the background, for the one muted line under the pills.
+  function why(task) {
+    var lines = String(task.context || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+    return lines.length ? lines[0].slice(0, 300) : "";
+  }
+
+  // The source line ("From: ...") shared by the task dialog and the open task. False when the item is gone.
+  function writeSource(node, itemId) {
+    node.textContent = "";
+    node.hidden = true;
+    var from = itemId ? state.items.filter(function (i) { return i.id === itemId; })[0] : null;
+    if (!from) return false;
+    node.hidden = false;
+    var lead = fromNotes(from) ? (from.kind === "promise" ? "From your promise in a meeting: " : from.kind === "decision" ? "From a decision in a meeting: " : "From a meeting: ")
+      : from.lane === "commitment" ? "From your promise: " : "From: ";
+    node.appendChild(document.createTextNode(lead + from.title + " "));
+    sourceLinks(from).forEach(function (link) {
+      node.appendChild(linkTo(link.href, link.label + " ↗", "chip"));
+      node.appendChild(document.createTextNode(" "));
+    });
+    return true;
+  }
+
+  // One line of related work: another task, a suggestion or an inbox item.
+  function relatedRow(r, inDialog) {
+    var row = el("div", "td-link");
+    var kind = r.kind === "task" ? "Task" : r.lane === "commitment" ? "Suggested" : "Inbox";
+    row.appendChild(el("span", "kind", kind));
+    var target = r.kind === "task"
+      ? state.tasks.filter(function (t) { return t.id === r.id && t.status === "open"; })[0]
+      : state.items.filter(function (i) { return i.id === r.id && (i.status === "open" || i.status === "snoozed"); })[0];
+    if (!target) {
+      row.appendChild(el("span", "closed-ref", r.title + " (closed)"));
+    } else if (r.kind === "task") {
+      row.appendChild(button(r.title, "ref", function () { if (inDialog) openTask(target); else goToTask(target); }));
+    } else {
+      row.appendChild(button(r.title, "ref", function () {
+        if (inDialog) $("task-dialog").close();
+        goToItem(target);
+      }));
+    }
+    return row;
+  }
+
+  function label(text) {
+    return el("p", "owed-head", text);
+  }
+
+  // What you see when you open a task in the list: everything it holds, read-only.
+  function taskDetails(task, row) {
+    var open = task.status === "open";
+    var box = el("div", "fold-body task-open");
+    var any = false;
+    if (task.context) { box.appendChild(el("p", "gist pre", task.context)); any = true; }
+    var steps = Array.isArray(task.steps) ? task.steps : [];
+    if (steps.length) {
+      any = true;
+      box.appendChild(label("Steps"));
+      steps.forEach(function (step, i) {
+        var line = el("label", "tstep" + (step.done ? " is-done" : ""));
+        var tick = document.createElement("input");
+        tick.type = "checkbox";
+        tick.checked = !!step.done;
+        tick.addEventListener("change", function () {
+          var next = steps.map(function (x, j) { return { text: String(x.text || ""), done: j === i ? tick.checked : !!x.done }; });
+          saveTask(task.id, { steps: next });
+        });
+        line.appendChild(tick);
+        line.appendChild(el("span", null, step.text));
+        box.appendChild(line);
+      });
+    }
+    if (task.notes) { any = true; box.appendChild(label("Notes")); box.appendChild(el("p", "gist pre", task.notes)); }
+    var links = (Array.isArray(task.links) ? task.links : []).map(function (l) {
+      var href = l && l.url ? F.safeUrl(l.url) : null;
+      return href ? { href: href, label: l.label || F.host(href) } : null;
+    }).filter(Boolean);
+    if (links.length) {
+      any = true;
+      box.appendChild(label("Links"));
+      var chips = el("p", "plan-links");
+      links.forEach(function (l) { chips.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
+      box.appendChild(chips);
+    }
+    var from = el("p", "hint");
+    if (writeSource(from, task.source_item_id)) { any = true; box.appendChild(from); }
+    var related = Array.isArray(task.related) ? task.related : [];
+    if (related.length) {
+      any = true;
+      box.appendChild(label("Related work"));
+      related.forEach(function (r) { box.appendChild(relatedRow(r, false)); });
+    }
+    if (!any) box.appendChild(el("p", "empty", "Nothing more written down yet."));
+
+    var actions = el("div", "actions");
+    actions.appendChild(button("Edit", "btn", function () { openTask(task); }));
+    if (open) {
+      actions.appendChild(button("Done", "btn", function () { finishTask(task, row); }));
+      actions.appendChild(button("Drop", "btn subtle", function () {
+        saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() });
+        toast("Task dropped.", function () { saveTask(task.id, { status: "open", done_at: null }); });
+      }));
+      var when = document.createElement("select");
+      when.className = "task-when";
+      when.setAttribute("aria-label", "Move task");
+      HORIZONS.forEach(function (h) {
+        var o = el("option", null, "Move to: " + h.label);
+        o.value = h.id;
+        o.selected = horizonOf(task) === h.id;
+        when.appendChild(o);
+      });
+      when.addEventListener("change", function () { saveTask(task.id, { horizon: when.value }); });
+      actions.appendChild(when);
+    }
+    box.appendChild(actions);
+    return box;
+  }
+
   function taskRow(task) {
-    var row = el("div", "task" + (task.status === "done" ? " is-done" : ""));
+    var isOpen = !!state.openTasks[task.id];
+    var row = el("div", "trow" + (task.status === "done" ? " is-done" : "") + (isOpen ? " is-open" : ""));
     row.setAttribute("data-task", task.id);
     var tick = document.createElement("input");
     tick.type = "checkbox";
+    tick.className = "round";
     tick.checked = task.status === "done";
     tick.setAttribute("aria-label", task.status === "done" ? "Reopen task" : "Mark task done");
     tick.addEventListener("change", async function () {
@@ -1174,48 +1469,75 @@
     });
     row.appendChild(tick);
 
-    var main = el("div", "task-main");
-    main.appendChild(button(task.title, "task-title", function () { openTask(task); }));
-    var tags = el("span", "task-tags");
-    tags.appendChild(el("span", "tag tag-" + task.space, spaceLabel(task.space)));
-    if (projectName(task)) {
-      tags.appendChild(button(projectName(task), "project", function () {
-        state.project = task.project_id;
-        render();
-      }));
-    }
-    var due = dueLabel(task.due_on);
-    if (due && task.status === "open") tags.appendChild(el("span", "flag flag-" + (due.late ? 3 : 2), due.text));
-    if (task.repeat) tags.appendChild(el("span", "repeat", "Repeats " + REPEATS[task.repeat]));
-    var steps = Array.isArray(task.steps) ? task.steps : [];
-    if (steps.length && task.status === "open") {
-      tags.appendChild(el("span", "repeat", steps.filter(function (x) { return x.done; }).length + "/" + steps.length + " steps"));
-    }
-    main.appendChild(tags);
+    var main = el("div", "trow-main");
+    var title = button(task.title, "task-title", function () {});
+    title.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    main.appendChild(title);
+    main.appendChild(pills(task));
+    var late = lateNote(task);
+    if (late) main.appendChild(el("p", "trow-late", late));
+    if (!isOpen && task.context) main.appendChild(el("p", "trow-why", why(task)));
     row.appendChild(main);
+    if (isOpen) row.appendChild(taskDetails(task, row));
 
-    if (task.status === "open") {
-      var when = document.createElement("select");
-      when.className = "task-when";
-      when.setAttribute("aria-label", "Move task");
-      HORIZONS.forEach(function (h) {
-        var o = el("option", null, h.label);
-        o.value = h.id;
-        o.selected = task.horizon === h.id;
-        when.appendChild(o);
-      });
-      when.addEventListener("change", function () { saveTask(task.id, { horizon: when.value }); });
-      row.appendChild(when);
-    }
+    // Tapping the row opens or closes it in place. Controls inside it do their own thing.
+    row.addEventListener("click", function (event) {
+      if (event.target.closest("input, a, select, .fold-body, button:not(.task-title)")) return;
+      if (state.openTasks[task.id]) delete state.openTasks[task.id]; else state.openTasks[task.id] = true;
+      var fresh = taskRow(task);
+      row.replaceWith(fresh);
+      if (event.target.classList.contains("task-title")) fresh.querySelector(".task-title").focus({ preventScroll: true });
+    });
     return row;
   }
 
-  function group(list, heading, rows) {
-    if (!rows.length) return;
-    list.appendChild(el("h3", "horizon", heading));
-    rows.forEach(function (t) { list.appendChild(taskRow(t)); });
+  // Jumps to a task in the list and opens it.
+  function goToTask(task) {
+    clearSearch();
+    state.view = "tasks";
+    writePref("desk.view", "tasks");
+    if (state.filter !== "all" && state.filter !== task.space) {
+      state.filter = "all";
+      writePref("desk.space", "all");
+    }
+    state.project = null;
+    state.openSections[horizonOf(task)] = true;
+    state.openTasks[task.id] = true;
+    render();
+    var row = document.querySelector('[data-task="' + task.id + '"]');
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    row.classList.add("flash");
+    setTimeout(function () { row.classList.remove("flash"); }, 2200);
   }
 
+  // Tasks with a date first, by date; then the rest, newest first.
+  function taskOrder(a, b) {
+    if (a.due_on && b.due_on) return a.due_on < b.due_on ? -1 : a.due_on > b.due_on ? 1 : 0;
+    if (a.due_on !== b.due_on) return a.due_on ? -1 : 1;
+    return Date.parse(b.created_at) - Date.parse(a.created_at);
+  }
+
+  // One section as a card: a heading with a count and a caret, then its rows.
+  function taskSection(id, name, rows, collapsible) {
+    var box = el(collapsible ? "details" : "div", "tsec");
+    box.setAttribute("data-section", id);
+    var head = el(collapsible ? "summary" : "div", "tsec-head");
+    head.appendChild(el("span", "tsec-name", name));
+    head.appendChild(el("span", "count", String(rows.length)));
+    box.appendChild(head);
+    var body = el("div", "tsec-body");
+    if (!rows.length) body.appendChild(el("p", "empty", "Nothing here"));
+    rows.forEach(function (t) { body.appendChild(taskRow(t)); });
+    box.appendChild(body);
+    if (collapsible) {
+      box.open = needles.length ? true : !!state.openSections[id];
+      head.addEventListener("click", function () { state.openSections[id] = !box.open; });
+    }
+    return box;
+  }
+
+  // Draws the Tasks list; returns how many rows it shows.
   function renderTasks() {
     var list = $("list-tasks");
     list.textContent = "";
@@ -1225,8 +1547,9 @@
       state.project = null;
     }
     var mine = inSpace.filter(function (t) { return !state.project || t.project_id === state.project; });
-    var open = mine.filter(function (t) { return t.status === "open"; });
-    $("n-tasks").textContent = open.length ? String(open.length) : "";
+    $("n-tasks").textContent = mine.filter(function (t) { return t.status === "open"; }).length || "";
+    var shown = needles.length ? mine.filter(function (t) { return hit(taskParts(t)); }) : mine;
+    var open = shown.filter(function (t) { return t.status === "open"; });
 
     // List or by day, then one chip per project with open tasks.
     var tools = $("task-tools");
@@ -1253,31 +1576,38 @@
       }));
     });
 
+    var group = function (id, name, rows) {
+      if (!rows.length) return;
+      list.appendChild(taskSection(id, name, rows, false));
+    };
     if (state.taskMode === "days") {
       var today = localDay();
       var byCreated = function (a, b) { return a.created_at < b.created_at ? -1 : 1; };
-      group(list, "Overdue", open.filter(function (t) { return t.due_on && t.due_on < today; }).sort(function (a, b) { return a.due_on < b.due_on ? -1 : 1; }));
+      group("overdue", "Overdue", open.filter(function (t) { return t.due_on && t.due_on < today; }).sort(function (a, b) { return a.due_on < b.due_on ? -1 : 1; }));
       var days = {};
       open.forEach(function (t) { if (t.due_on && t.due_on >= today) (days[t.due_on] = days[t.due_on] || []).push(t); });
       Object.keys(days).sort().forEach(function (day) {
         var d = new Date(day + "T12:00:00");
         var name = d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
-        group(list, day === today ? "Today · " + name : name, days[day].sort(byCreated));
+        group(day, day === today ? "Today · " + name : name, days[day].sort(byCreated));
       });
-      group(list, "No date", open.filter(function (t) { return !t.due_on; }));
+      group("nodate", "No date", open.filter(function (t) { return !t.due_on; }));
     } else {
       HORIZONS.forEach(function (h) {
-        group(list, h.label, open.filter(function (t) { return t.horizon === h.id; }));
+        var rows = open.filter(function (t) { return horizonOf(t) === h.id; }).sort(taskOrder);
+        if (needles.length && !rows.length) return;
+        list.appendChild(taskSection(h.id, h.label, rows, true));
       });
     }
-    if (!open.length) list.appendChild(el("p", "empty", state.project ? "No open tasks in this project." : "No open tasks."));
+    if (!open.length && !needles.length && state.taskMode === "days") list.appendChild(el("p", "empty", state.project ? "No open tasks in this project." : "No open tasks."));
 
-    var done = mine.filter(function (t) { return t.status === "done"; });
+    var done = shown.filter(function (t) { return t.status === "done"; });
     var doneList = $("list-tasks-done");
     doneList.textContent = "";
     done.forEach(function (t) { doneList.appendChild(taskRow(t)); });
     $("n-tasks-done").textContent = done.length ? String(done.length) : "";
     $("box-tasks-done").hidden = !done.length;
+    return open.length + done.length;
   }
 
   // Ticking a task off: stamp the row, fold it away, then say so (with Undo unless it repeats,
@@ -1410,25 +1740,13 @@
     var box = $("td-related");
     box.textContent = "";
     $("td-related-box").hidden = !draft.related.length;
-    draft.related.forEach(function (r) {
-      var row = el("div", "td-link");
-      var kind = r.kind === "task" ? "Task" : r.lane === "commitment" ? "Suggested" : "Inbox";
-      row.appendChild(el("span", "kind", kind));
-      var target = r.kind === "task"
-        ? state.tasks.filter(function (t) { return t.id === r.id && t.status === "open"; })[0]
-        : state.items.filter(function (i) { return i.id === r.id && (i.status === "open" || i.status === "snoozed"); })[0];
-      if (!target) {
-        row.appendChild(el("span", "closed-ref", r.title + " (closed)"));
-      } else if (r.kind === "task") {
-        row.appendChild(button(r.title, "ref", function () { openTask(target); }));
-      } else {
-        row.appendChild(button(r.title, "ref", function () {
-          $("task-dialog").close();
-          goToItem(target);
-        }));
-      }
-      box.appendChild(row);
-    });
+    draft.related.forEach(function (r) { box.appendChild(relatedRow(r, true)); });
+  }
+
+  // True when the task has anything filled in that lives under "More".
+  function hasMore(task) {
+    return !!(task.repeat || task.context || task.notes || task.source_item_id ||
+      (task.steps && task.steps.length) || (task.links && task.links.length) || (task.related && task.related.length));
   }
 
   function showDialog(task, hint) {
@@ -1452,22 +1770,10 @@
     drawSteps();
     drawRelated();
 
-    var source = $("td-source");
-    source.textContent = "";
-    source.hidden = true;
-    var from = task.source_item_id ? state.items.filter(function (i) { return i.id === task.source_item_id; })[0] : null;
-    if (from) {
-      source.hidden = false;
-      var lead = fromNotes(from) ? (from.kind === "promise" ? "From your promise in a meeting: " : from.kind === "decision" ? "From a decision in a meeting: " : "From a meeting: ")
-        : from.lane === "commitment" ? "From your promise: " : "From: ";
-      source.appendChild(document.createTextNode(lead + from.title + " "));
-      sourceLinks(from).forEach(function (link) {
-        source.appendChild(linkTo(link.href, link.label + " ↗", "chip"));
-        source.appendChild(document.createTextNode(" "));
-      });
-    }
-    $("td-done").hidden = !task.id || task.status !== "open";
-    $("td-drop").hidden = !task.id || task.status !== "open";
+    writeSource($("td-source"), task.source_item_id);
+    $("td-more").open = hasMore(task);
+    $("td-body").scrollTop = 0;
+    $("td-extra").hidden = !task.id || task.status !== "open";
     var dialog = $("task-dialog");
     if (!dialog.open) dialog.showModal();
   }
@@ -1604,7 +1910,7 @@
         sb.from("channels").select("space, slack_channel_id, name, kind").limit(5000),
         sb.from("accounts").select("space, slack_url, slack_user_id, email"),
         sb.from("tasks")
-          .select("id, space, project_id, title, notes, context, links, steps, related, repeat, horizon, status, due_on, source_item_id, created_at, done_at, projects(name)")
+          .select("id, space, project_id, title, notes, context, links, steps, related, repeat, horizon, status, due_on, source_item_id, slips, first_due_on, created_at, done_at, projects(name)")
           .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
           .order("created_at", { ascending: true })
           .limit(1000),
@@ -1839,6 +2145,30 @@
     $("td-link-label").value = "";
     $("td-link-url").value = "";
     drawLinks();
+  });
+
+  $("td-close").addEventListener("click", function () { $("task-dialog").close(); });
+  $("pd-close").addEventListener("click", function () { $("plan-dialog").close(); });
+
+  // Search: the current view shows only what contains every word typed. The box itself is never redrawn.
+  $("search").addEventListener("input", function () {
+    $("search-clear").hidden = !$("search").value;
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(function () { state.query = $("search").value; render(); }, 150);
+  });
+  $("search-clear").addEventListener("click", function () {
+    clearSearch();
+    render();
+    $("search").focus();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape" || !$("search").value || document.querySelector("dialog[open]")) return;
+    clearSearch();
+    render();
+  });
+  FOLDS.forEach(function (id) {
+    var fold = $(id);
+    fold.querySelector("summary").addEventListener("click", function () { state.folds[id] = !fold.open; });
   });
 
   $("alerts").addEventListener("click", function () {

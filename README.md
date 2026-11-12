@@ -14,7 +14,7 @@ The backend (collector, database rules, agents) is in the private repository `ft
 | File | What it is |
 | --- | --- |
 | `index.html` | The page. Its content security policy only allows its own files and the Desk's Supabase project. |
-| `app.js` | Sign-in; four sections under the organisation filter (Inbox; Tasks, with a tray of suggested tasks from promises and meeting notes; Planning, with plans you can add and edit, other projects and decisions; Meetings by day with what you owe for each); tasks you can open (background, notes, links, due date, repeats), adding a task from one line with suggestions from the `task-suggest` function, project filter, list and by-day views; live updates. |
+| `app.js` | Sign-in; four sections under the organisation filter and a search box that filters whichever one you are in (Inbox, newest first; Tasks, with a tray of suggested tasks, newest first, and your tasks in collapsible sections Today, This week, Next 2-3 weeks and Later, each row opening in place to show everything about it; Planning, with plans you can add and edit, other projects and decisions; Meetings by day with what you owe for each); the task and plan editors, which fill the screen on a phone with Save always in view; adding a task from one line with suggestions from the `task-suggest` function, project filter, list and by-day views; live updates. |
 | `format.js` | Makes message text readable: drops quoted history, signatures and mailing footers from email, turns long links into short labels, reads Google Docs comment notices into file, comments and link, and renders Slack formatting. Returns plain data; never HTML. |
 | `style.css` | Styling, light and dark. |
 | `config.js` | Project address and publishable key. |

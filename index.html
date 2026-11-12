@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="19">
+  <meta name="desk-version" content="20">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=19">
+  <link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -40,9 +40,16 @@
 
     <nav id="views" class="views" aria-label="Section"></nav>
 
+    <div class="searchbar" role="search">
+      <input id="search" type="search" placeholder="Search this page" aria-label="Search this page" autocomplete="off" spellcheck="false" maxlength="200">
+      <button id="search-clear" type="button" class="quiet" hidden>Clear</button>
+      <span id="search-count" class="search-count" aria-live="polite"></span>
+    </div>
+
     <p id="notice" class="notice" role="status" hidden></p>
 
     <main>
+      <p id="search-empty" class="empty search-empty" hidden></p>
       <section aria-labelledby="h-waiting" data-view="inbox">
         <h2 id="h-waiting">Waiting on you <span id="n-waiting" class="count"></span></h2>
         <div id="list-waiting" class="list"></div>
@@ -118,29 +125,34 @@
 
     <dialog id="plan-dialog" class="task-dialog" aria-labelledby="pd-heading">
       <form id="pd-form" method="dialog" autocomplete="off">
-        <h2 id="pd-heading">Plan</h2>
-        <div id="pd-space-box" hidden>
-          <label for="pd-space">Organisation</label>
-          <select id="pd-space"><option value="metaculus">Metaculus</option><option value="cea">CEA</option><option value="personal">Personal</option></select>
+        <header class="dlg-head">
+          <h2 id="pd-heading">Plan</h2>
+          <button id="pd-close" type="button" class="dlg-close" aria-label="Close">×</button>
+        </header>
+        <div class="dlg-body">
+          <div id="pd-space-box" hidden>
+            <label for="pd-space">Organisation</label>
+            <select id="pd-space"><option value="metaculus">Metaculus</option><option value="cea">CEA</option><option value="personal">Personal</option></select>
+          </div>
+          <label for="pd-name">Name</label>
+          <input id="pd-name" type="text" maxlength="200" required>
+          <div class="td-row">
+            <div><label for="pd-stage">Stage</label><select id="pd-stage"></select></div>
+            <div><label for="pd-target">Target date</label><input id="pd-target" type="date"></div>
+          </div>
+          <label for="pd-what">What it is</label>
+          <textarea id="pd-what" rows="4" maxlength="4000"></textarea>
+          <label for="pd-next">Next step</label>
+          <input id="pd-next" type="text" maxlength="300">
+          <label for="pd-after">Comes after (what it depends on)</label>
+          <input id="pd-after" type="text" maxlength="300">
+          <label for="pd-people">People</label>
+          <input id="pd-people" type="text" maxlength="300">
+          <label for="pd-tools">Tools</label>
+          <input id="pd-tools" type="text" maxlength="300">
+          <p id="pd-error" class="error" role="alert" hidden></p>
         </div>
-        <label for="pd-name">Name</label>
-        <input id="pd-name" type="text" maxlength="200" required>
-        <div class="td-row">
-          <div><label for="pd-stage">Stage</label><select id="pd-stage"></select></div>
-          <div><label for="pd-target">Target date</label><input id="pd-target" type="date"></div>
-        </div>
-        <label for="pd-what">What it is</label>
-        <textarea id="pd-what" rows="4" maxlength="4000"></textarea>
-        <label for="pd-next">Next step</label>
-        <input id="pd-next" type="text" maxlength="300">
-        <label for="pd-after">Comes after (what it depends on)</label>
-        <input id="pd-after" type="text" maxlength="300">
-        <label for="pd-people">People</label>
-        <input id="pd-people" type="text" maxlength="300">
-        <label for="pd-tools">Tools</label>
-        <input id="pd-tools" type="text" maxlength="300">
-        <p id="pd-error" class="error" role="alert" hidden></p>
-        <div class="td-actions">
+        <div class="dlg-foot td-actions">
           <button id="pd-save" type="submit" class="primary">Save</button>
           <button id="pd-cancel" type="button" class="btn subtle">Cancel</button>
         </div>
@@ -149,61 +161,73 @@
 
     <dialog id="task-dialog" class="task-dialog" aria-labelledby="td-heading">
       <form id="td-form" method="dialog" autocomplete="off">
-        <h2 id="td-heading">Task</h2>
-        <p id="td-hint" class="hint" hidden></p>
-        <label for="td-title">Task</label>
-        <input id="td-title" type="text" maxlength="300" required>
-        <div class="td-row">
-          <div><label for="td-space">Organisation</label>
-            <select id="td-space"><option value="metaculus">Metaculus</option><option value="cea">CEA</option><option value="personal">Personal</option></select></div>
-          <div><label for="td-project">Project</label>
-            <select id="td-project"></select>
-            <input id="td-project-new" type="text" maxlength="80" placeholder="New project name" aria-label="New project name" hidden></div>
+        <header class="dlg-head">
+          <h2 id="td-heading">Task</h2>
+          <button id="td-close" type="button" class="dlg-close" aria-label="Close">×</button>
+        </header>
+        <div id="td-body" class="dlg-body">
+          <p id="td-hint" class="hint" hidden></p>
+          <label for="td-title">Task</label>
+          <input id="td-title" type="text" maxlength="300" required>
+          <div class="td-row">
+            <div><label for="td-horizon">Section</label>
+              <select id="td-horizon"><option value="today">Today</option><option value="week">This week</option><option value="weeks">Next 2-3 weeks</option><option value="later">Later</option></select></div>
+            <div><label for="td-due">Due date</label>
+              <input id="td-due" type="date"></div>
+          </div>
+          <div class="td-row">
+            <div><label for="td-space">Organisation</label>
+              <select id="td-space"><option value="metaculus">Metaculus</option><option value="cea">CEA</option><option value="personal">Personal</option></select></div>
+            <div><label for="td-project">Project</label>
+              <select id="td-project"></select>
+              <input id="td-project-new" type="text" maxlength="80" placeholder="New project name" aria-label="New project name" hidden></div>
+          </div>
+          <details id="td-more" class="td-more">
+            <summary>More</summary>
+            <div class="fold-body">
+              <label for="td-repeat">Repeats</label>
+              <select id="td-repeat"><option value="">Does not repeat</option><option value="daily">Every day</option><option value="weekly">Every week</option><option value="biweekly">Every 2 weeks</option><option value="monthly">Every month</option></select>
+              <label for="td-context">Background</label>
+              <textarea id="td-context" rows="4" maxlength="4000"></textarea>
+              <label>Steps</label>
+              <div id="td-steps" class="td-steps"></div>
+              <div class="td-row td-addlink">
+                <input id="td-step-text" type="text" maxlength="200" placeholder="Add a step" aria-label="New step">
+                <button id="td-step-add" type="button" class="btn">Add step</button>
+              </div>
+              <div id="td-related-box" hidden>
+                <label>Related open work</label>
+                <div id="td-related" class="td-related"></div>
+              </div>
+              <label for="td-notes">Notes</label>
+              <textarea id="td-notes" rows="4" maxlength="20000"></textarea>
+              <label>Links</label>
+              <div id="td-links" class="td-links"></div>
+              <div class="td-row td-addlink">
+                <input id="td-link-label" type="text" maxlength="80" placeholder="Name" aria-label="Link name">
+                <input id="td-link-url" type="url" maxlength="2000" placeholder="https://…" aria-label="Link address">
+                <button id="td-link-add" type="button" class="btn">Add link</button>
+              </div>
+              <p id="td-source" class="hint" hidden></p>
+            </div>
+          </details>
+          <p id="td-error" class="error" role="alert" hidden></p>
+          <div id="td-extra" class="td-extra">
+            <button id="td-done" type="button" class="btn">Mark done</button>
+            <button id="td-drop" type="button" class="btn subtle">Drop</button>
+          </div>
         </div>
-        <div class="td-row">
-          <div><label for="td-horizon">When</label>
-            <select id="td-horizon"><option value="today">Today</option><option value="week">This week</option><option value="later">Later</option></select></div>
-          <div><label for="td-due">Due date</label>
-            <input id="td-due" type="date"></div>
-          <div><label for="td-repeat">Repeats</label>
-            <select id="td-repeat"><option value="">Does not repeat</option><option value="daily">Every day</option><option value="weekly">Every week</option><option value="biweekly">Every 2 weeks</option><option value="monthly">Every month</option></select></div>
-        </div>
-        <label for="td-context">Background</label>
-        <textarea id="td-context" rows="4" maxlength="4000"></textarea>
-        <label>Steps</label>
-        <div id="td-steps" class="td-steps"></div>
-        <div class="td-row td-addlink">
-          <input id="td-step-text" type="text" maxlength="200" placeholder="Add a step" aria-label="New step">
-          <button id="td-step-add" type="button" class="btn">Add step</button>
-        </div>
-        <div id="td-related-box" hidden>
-          <label>Related open work</label>
-          <div id="td-related" class="td-related"></div>
-        </div>
-        <label for="td-notes">Notes</label>
-        <textarea id="td-notes" rows="4" maxlength="20000"></textarea>
-        <label>Links</label>
-        <div id="td-links" class="td-links"></div>
-        <div class="td-row td-addlink">
-          <input id="td-link-label" type="text" maxlength="80" placeholder="Name" aria-label="Link name">
-          <input id="td-link-url" type="url" maxlength="2000" placeholder="https://…" aria-label="Link address">
-          <button id="td-link-add" type="button" class="btn">Add link</button>
-        </div>
-        <p id="td-source" class="hint" hidden></p>
-        <p id="td-error" class="error" role="alert" hidden></p>
-        <div class="td-actions">
+        <div class="dlg-foot td-actions">
           <button id="td-save" type="submit" class="primary">Save</button>
-          <button id="td-done" type="button" class="btn">Mark done</button>
-          <button id="td-drop" type="button" class="btn subtle">Drop</button>
           <button id="td-cancel" type="button" class="btn subtle">Cancel</button>
         </div>
       </form>
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=19"></script>
-  <script src="config.js?v=19"></script>
-  <script src="format.js?v=19"></script>
-  <script src="app.js?v=19"></script>
+  <script src="vendor/supabase-2.119.0.js?v=20"></script>
+  <script src="config.js?v=20"></script>
+  <script src="format.js?v=20"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>
