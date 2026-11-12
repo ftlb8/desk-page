@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="20">
+  <meta name="desk-version" content="21">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=20">
+  <link rel="stylesheet" href="style.css?v=21">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -50,9 +50,8 @@
 
     <main>
       <p id="search-empty" class="empty search-empty" hidden></p>
-      <section aria-labelledby="h-waiting" data-view="inbox">
-        <h2 id="h-waiting">Waiting on you <span id="n-waiting" class="count"></span></h2>
-        <div id="list-waiting" class="list"></div>
+      <section aria-label="Inbox" data-view="inbox" class="inbox">
+        <div id="list-inbox" class="inbox-grid"></div>
       </section>
 
       <section aria-labelledby="h-plans" data-view="planning">
@@ -71,28 +70,34 @@
 
       <section aria-labelledby="h-tasks" data-view="tasks">
         <h2 id="h-tasks">Tasks <span id="n-tasks" class="count"></span></h2>
-        <details id="box-suggested">
-          <summary>Suggested tasks · <span id="n-suggested" class="count"></span></summary>
-          <div id="list-suggested" class="list"></div>
-          <details id="box-later-sug" class="sub-box">
-            <summary>Later <span id="n-later-sug" class="count"></span></summary>
-            <div id="list-later-sug" class="list"></div>
-          </details>
-          <details id="box-closed-sug" class="sub-box">
-            <summary>Closed in the last 24 hours <span id="n-closed-sug" class="count"></span></summary>
-            <div id="list-closed-sug" class="list"></div>
-          </details>
-        </details>
-        <form id="task-form" class="task-form" autocomplete="off">
-          <input id="task-title" type="text" placeholder="Add a task in your own words, e.g. “payroll run every other Friday”" maxlength="500" required aria-label="New task">
-          <button id="task-add" type="submit" class="btn">Add</button>
-        </form>
-        <div id="task-tools" class="task-tools"></div>
-        <div id="list-tasks"></div>
-        <details id="box-tasks-done">
-          <summary>Done in the last 24 hours <span id="n-tasks-done" class="count"></span></summary>
-          <div id="list-tasks-done"></div>
-        </details>
+        <div class="tasks-grid">
+          <div class="tasks-side">
+            <details id="box-suggested">
+              <summary>Suggested tasks · <span id="n-suggested" class="count"></span></summary>
+              <div id="list-suggested" class="list"></div>
+              <details id="box-later-sug" class="sub-box">
+                <summary>Later <span id="n-later-sug" class="count"></span></summary>
+                <div id="list-later-sug" class="list"></div>
+              </details>
+              <details id="box-closed-sug" class="sub-box">
+                <summary>Closed in the last 24 hours <span id="n-closed-sug" class="count"></span></summary>
+                <div id="list-closed-sug" class="list"></div>
+              </details>
+            </details>
+          </div>
+          <div class="tasks-main">
+            <form id="task-form" class="task-form" autocomplete="off">
+              <input id="task-title" type="text" placeholder="Add a task in your own words, e.g. “payroll run every other Friday”" maxlength="500" required aria-label="New task">
+              <button id="task-add" type="submit" class="btn">Add</button>
+            </form>
+            <div id="task-tools" class="task-tools"></div>
+            <div id="list-tasks"></div>
+            <details id="box-tasks-done">
+              <summary>Done in the last 24 hours <span id="n-tasks-done" class="count"></span></summary>
+              <div id="list-tasks-done"></div>
+            </details>
+          </div>
+        </div>
       </section>
 
       <section aria-labelledby="h-meetings" data-view="meetings">
@@ -100,9 +105,18 @@
         <div id="list-meetings"></div>
       </section>
 
-      <section aria-labelledby="h-look" data-view="inbox">
-        <h2 id="h-look">Worth a look <span id="n-look" class="count"></span></h2>
-        <div id="list-look" class="list"></div>
+      <section aria-labelledby="h-notes" data-view="notes">
+        <h2 id="h-notes">Notes</h2>
+        <form id="note-form" class="note-form" autocomplete="off">
+          <textarea id="note-body" rows="2" maxlength="20000" placeholder="Write a note" aria-label="New note"></textarea>
+          <div class="note-row">
+            <select id="note-space" aria-label="Organisation"></select>
+            <select id="note-plan" aria-label="Plan"></select>
+            <button id="note-save" type="submit" class="primary">Save</button>
+          </div>
+          <p id="note-error" class="error" role="alert" hidden></p>
+        </form>
+        <div id="list-notes" class="notes-list"></div>
       </section>
 
       <details id="box-later">
@@ -225,9 +239,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=20"></script>
-  <script src="config.js?v=20"></script>
-  <script src="format.js?v=20"></script>
-  <script src="app.js?v=20"></script>
+  <script src="vendor/supabase-2.119.0.js?v=21"></script>
+  <script src="config.js?v=21"></script>
+  <script src="format.js?v=21"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>

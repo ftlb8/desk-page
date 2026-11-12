@@ -23,6 +23,7 @@
     { id: "tasks", label: "Tasks" },
     { id: "planning", label: "Planning" },
     { id: "meetings", label: "Meetings" },
+    { id: "notes", label: "Notes" },
   ];
   var DAY = 24 * 60 * 60 * 1000;
 
@@ -30,6 +31,12 @@
     items: [],
     tasks: [],
     meetings: [],
+    notes: [],
+    openNotes: {},    // ids of long notes you opened in full
+    noteAsk: null,    // id of the note you are being asked about deleting
+    noteEdit: null,   // { id, node } while a note is being edited in place
+    noteSpace: null,  // the organisation you last saved a note for in this session
+    openInbox: {},    // inbox sections you closed (false) or opened (true); all start open
     openMeetings: {}, // ids of meetings whose details you opened
     openPlans: {},    // ids of plans whose details you opened
     openTasks: {},    // ids of tasks you expanded in the list
@@ -39,7 +46,7 @@
     reviewing: {},    // ids of plans whose review is running
     doneSuggestions: {}, // review suggestions that became tasks this session, keyed by plan id and text
     projects: [],
-    people: {},   // "space:userId" -> { name, is_vip }
+    people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
@@ -469,6 +476,9 @@
     } else if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
       top.appendChild(el("span", "flag flag-" + item.urgency, item.urgency === 3 ? "Today" : "Soon"));
     }
+    if (kind === "waiting" || kind === "look") {
+      top.appendChild(el("span", "kind lane-tag lane-" + kind, kind === "waiting" ? "Needs you" : "FYI"));
+    }
     var meta;
     if (fromNotes(item)) {
       var KINDS = { promise: "Promise", todo: "To-do", decision: "Decision" };
@@ -619,6 +629,80 @@
     items.forEach(function (item) { list.appendChild(card(item, "commit")); });
   }
 
+  // ---------- Inbox: four sections ----------
+
+  // True when a Slack message came from one of the key people of its organisation.
+  function fromKeyPerson(item) {
+    var m = item.messages || {};
+    if (m.source === "gmail" || !m.author_id) return false;
+    var p = state.people[item.space + ":" + m.author_id];
+    return !!(p && p.is_key);
+  }
+
+  // The first section's title: the first names of the key people of the organisation in the filter.
+  function keyTitle() {
+    if (state.filter === "all") return "Key people";
+    var names = [];
+    Object.keys(state.people).forEach(function (k) {
+      var p = state.people[k];
+      if (!p.is_key || p.space !== state.filter || !p.name) return;
+      var first = String(p.name).trim().split(/\s+/)[0];
+      if (first && names.indexOf(first) < 0) names.push(first);
+    });
+    names.sort();
+    if (!names.length) return "Key people";
+    if (names.length === 1) return names[0];
+    return names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+  }
+
+  function inboxSection(id, name, entries) {
+    var box = el("details", "tsec");
+    box.setAttribute("data-inbox", id);
+    var head = el("summary", "tsec-head");
+    head.appendChild(el("span", "tsec-name", name));
+    head.appendChild(el("span", "count", String(entries.length)));
+    box.appendChild(head);
+    var body = el("div", "tsec-body");
+    if (!entries.length) body.appendChild(el("p", "empty", "Nothing here"));
+    entries.forEach(function (e) { body.appendChild(card(e.item, e.kind)); });
+    box.appendChild(body);
+    box.open = needles.length ? true : state.openInbox[id] !== false; // all start open
+    head.addEventListener("click", function () { state.openInbox[id] = !box.open; });
+    return box;
+  }
+
+  // Waiting and worth-a-look items go into four sections, newest first. Returns how many cards are shown.
+  function renderInbox(waiting, look) {
+    var all = waiting.map(function (i) { return { item: i, kind: "waiting" }; })
+      .concat(look.map(function (i) { return { item: i, kind: "look" }; }));
+    all.sort(function (a, b) { return newest(a.item, b.item); });
+    var parts = { key: [], others: [], channels: [], email: [] };
+    all.forEach(function (e) {
+      if (isEmail(e.item)) parts.email.push(e);
+      else if (fromKeyPerson(e.item)) parts.key.push(e);
+      else if (e.kind === "waiting") parts.others.push(e);
+      else parts.channels.push(e);
+    });
+    var defs = [
+      { id: "key", name: keyTitle(), col: 0 },
+      { id: "others", name: "Other DMs and mentions", col: 0 },
+      { id: "channels", name: "Key channels", col: 1 },
+      { id: "email", name: "Email and Google Drive", col: 1 },
+    ];
+    var grid = $("list-inbox");
+    grid.textContent = "";
+    var cols = [el("div", "inbox-col"), el("div", "inbox-col")];
+    var shown = 0;
+    defs.forEach(function (d) {
+      if (needles.length && !parts[d.id].length) return; // a section with nothing that matches is hidden
+      shown += parts[d.id].length;
+      cols[d.col].appendChild(inboxSection(d.id, d.name, parts[d.id]));
+    });
+    grid.appendChild(cols[0]);
+    grid.appendChild(cols[1]);
+    return shown;
+  }
+
   // Which view an item lives in: suggested tasks in Tasks, decisions in Planning, the rest in Inbox.
   function viewFor(item) {
     if (item.lane !== "commitment") return "inbox";
@@ -629,8 +713,15 @@
   // a fold that holds a match is shown open.
   var FOLDS = ["box-suggested", "box-later-sug", "box-closed-sug", "box-decisions", "box-later", "box-closed", "box-tasks-done"];
 
+  // On a wide screen the tray of suggested tasks is open until you close it; on a phone it is closed until you open it.
+  function wide() {
+    return !!(window.matchMedia && window.matchMedia("(min-width: 1000px)").matches);
+  }
+
   function setFold(id, hasMatch) {
-    $(id).open = needles.length ? !!hasMatch : !!state.folds[id];
+    var chosen = state.folds[id];
+    if (chosen === undefined && id === "box-suggested") chosen = wide();
+    $(id).open = needles.length ? !!hasMatch : !!chosen;
   }
 
   function render() {
@@ -659,13 +750,12 @@
     groups.later.sort(function (a, b) { return a.snooze_until < b.snooze_until ? -1 : 1; });
     groups.closed.sort(function (a, b) { return a.closed_at > b.closed_at ? -1 : 1; });
 
-    fill("list-waiting", "n-waiting", groups.waiting, "waiting", "Nothing is waiting on you.");
+    var inboxRows = renderInbox(groups.waiting, groups.look);
     fillSuggested(groups.commit);
     $("box-suggested").hidden = !(groups.commit.length || groups.later.length || groups.closed.length);
     $("n-suggested").textContent = String(groups.commit.length);
     fillByTheme("list-decisions", "n-decisions", groups.decision, "decision");
     $("box-decisions").hidden = !groups.decision.length;
-    fill("list-look", "n-look", groups.look, "look", "Nothing else to look at.");
     var taskRows = renderTasks();
     // In Tasks, Later and Closed for the suggestions sit inside the tray; elsewhere they sit at the bottom.
     var inTasks = state.view === "tasks";
@@ -677,24 +767,22 @@
     $("box-closed-sug").hidden = !(inTasks && groups.closed.length);
     var planRows = renderPlanning();
     var meetingCards = renderMeetings();
-    var lists = state.view !== "meetings";
+    var noteRows = renderNotes();
+    var lists = state.view !== "meetings" && state.view !== "notes";
     $("box-later").hidden = !lists || inTasks || !groups.later.length;
     $("box-closed").hidden = !lists || inTasks || !groups.closed.length;
 
     // What is on screen in this view, for "N found" and for the sentence when nothing matches.
     found = groups.later.length + groups.closed.length;
-    if (state.view === "inbox") found += groups.waiting.length + groups.look.length;
+    if (state.view === "inbox") found += inboxRows;
     else if (state.view === "tasks") found += groups.commit.length + taskRows;
     else if (state.view === "planning") found += groups.decision.length + planRows;
+    else if (state.view === "notes") found += noteRows;
     else found += meetingCards;
 
     document.querySelectorAll("[data-view]").forEach(function (section) {
       section.hidden = section.getAttribute("data-view") !== state.view;
     });
-    if (searching) { // a section with nothing that matches is hidden
-      if (!groups.waiting.length) $("list-waiting").parentElement.hidden = true;
-      if (!groups.look.length) $("list-look").parentElement.hidden = true;
-    }
     setFold("box-suggested", groups.commit.length || groups.later.length || groups.closed.length);
     setFold("box-later-sug", groups.later.length);
     setFold("box-closed-sug", groups.closed.length);
@@ -702,6 +790,7 @@
     setFold("box-later", groups.later.length);
     setFold("box-closed", groups.closed.length);
     setFold("box-tasks-done", $("list-tasks-done").children.length);
+    if (state.view === "notes") fitNotes(); // measuring needs the view to be showing
 
     var box = $("search-empty");
     box.hidden = !(searching && !found);
@@ -829,6 +918,7 @@
       if (p.tagName === "DETAILS") {
         p.open = true;
         if (p.id) state.folds[p.id] = true; // stays open across redraws
+        if (p.getAttribute("data-inbox")) state.openInbox[p.getAttribute("data-inbox")] = true;
       }
     }
     card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
@@ -908,6 +998,7 @@
   function renderMeetings() {
     var list = $("list-meetings");
     list.textContent = "";
+    list.className = "";
     var now = Date.now();
     var today = dayStart(new Date());
     var days = {};
@@ -928,11 +1019,24 @@
       return 0;
     }
     var cardsShown = 0;
+    // Today goes in the left column, the following days in the right one (one column on a narrow screen).
+    var colLeft = el("div", "meet-col");
+    var colRight = el("div", "meet-col");
+    list.className = "meet-cols";
+    list.appendChild(colLeft);
+    list.appendChild(colRight);
+    if (!needles.length && days[today] === undefined) {
+      var none = el("div", "day-none");
+      none.appendChild(el("h3", "theme day", "Today"));
+      none.appendChild(el("p", "empty", "No meetings today."));
+      colLeft.appendChild(none);
+    }
     order.forEach(function (key) {
+      var column = key === today ? colLeft : colRight;
       var day = days[key];
       var name = day.offset === 0 ? "Today" : day.offset === 1 ? "Tomorrow"
         : new Date(key).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
-      list.appendChild(el("h3", "theme day", name));
+      column.appendChild(el("h3", "theme day", name));
       var cards = el("div", "list");
       var byTime = function (a, b) {
         if (!!a.all_day !== !!b.all_day) return a.all_day ? -1 : 1;
@@ -944,7 +1048,7 @@
         if (day.offset === 0 && meetingEnded(m, now)) earlier.push(m);
         else cards.appendChild(meetingCard(m, now));
       });
-      if (cards.children.length) list.appendChild(cards);
+      if (cards.children.length) column.appendChild(cards);
       if (earlier.length) {
         var fold = el("details", "earlier");
         var head = el("summary", null, "Earlier today · " + earlier.length);
@@ -954,7 +1058,7 @@
         earlier.forEach(function (m) { inner.appendChild(meetingCard(m, now)); });
         fold.appendChild(inner);
         fold.open = needles.length ? true : !!state.folds.earlier;
-        list.appendChild(fold);
+        column.appendChild(fold);
       }
     });
     return cardsShown;
@@ -1132,6 +1236,19 @@
         row.appendChild(button(t.title, "ref", function () { openTask(t); }));
         inside.appendChild(row);
       });
+    }
+    var planNotes = state.notes.filter(function (n) { return n.project_id === p.id; }).sort(notesNewest);
+    if (planNotes.length) {
+      inside.appendChild(el("p", "owed-head", "Notes"));
+      planNotes.slice(0, 3).forEach(function (n) {
+        var line = el("div", "plan-note");
+        line.appendChild(el("span", "meta", noteDate(n.created_at)));
+        line.appendChild(el("p", "plan-note-text", firstLines(n.body)));
+        inside.appendChild(line);
+      });
+      var allNotes = el("p", "plan-links");
+      allNotes.appendChild(button("All notes", "btn small", function () { showNotesFor(p); }));
+      inside.appendChild(allNotes);
     }
     fold.open = !!state.openPlans[p.id];
     fold.addEventListener("toggle", function () {
@@ -1880,10 +1997,295 @@
     await load();
   }
 
-  function notice(text) {
+  // A notice that load() wrote is cleared by the next good load; a notice about a failed save stays
+  // until something else replaces it, so a reload right after the failure does not wipe it.
+  function notice(text, fromLoad) {
+    state.noticeFromLoad = !!fromLoad && !!text;
     var n = $("notice");
     n.hidden = !text;
     n.textContent = text || "";
+  }
+
+  // ---------- Notes ----------
+
+  var NOTE_LINES = 6; // a note is cut after this many lines until you open it
+
+  function noteDate(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.getDate() + " " + d.toLocaleDateString([], { month: "short" }) + ", " + clock(d);
+  }
+
+  function noteById(id) {
+    return state.notes.filter(function (n) { return n.id === id; })[0] || null;
+  }
+
+  function projectById(id) {
+    if (id === null || id === undefined) return null;
+    return state.projects.filter(function (p) { return String(p.id) === String(id); })[0] || null;
+  }
+
+  function notesNewest(a, b) {
+    return (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0);
+  }
+
+  // Fills a plan picker with "No plan" and the plans and projects of one organisation, plans first.
+  function planOptions(select, space, chosen) {
+    select.textContent = "";
+    var none = el("option", null, "No plan");
+    none.value = "";
+    select.appendChild(none);
+    state.projects.filter(function (p) { return p.space === space; }).sort(function (a, b) {
+      if (!!a.is_plan !== !!b.is_plan) return a.is_plan ? -1 : 1;
+      return String(a.name).toLowerCase() < String(b.name).toLowerCase() ? -1 : 1;
+    }).forEach(function (p) {
+      var o = el("option", null, p.name);
+      o.value = String(p.id);
+      select.appendChild(o);
+    });
+    var wanted = chosen === null || chosen === undefined ? "" : String(chosen);
+    select.value = Array.prototype.some.call(select.options, function (o) { return o.value === wanted; }) ? wanted : "";
+  }
+
+  // The id to store for a picker's value (the project's own id, whatever its type).
+  function planChoice(select) {
+    var p = projectById(select.value);
+    return p ? p.id : null;
+  }
+
+  // Makes a box taller as you type, up to about six lines.
+  function grow(box) {
+    box.style.height = "auto";
+    var cs = getComputedStyle(box);
+    var line = parseFloat(cs.lineHeight);
+    if (isNaN(line)) line = parseFloat(cs.fontSize) * 1.45;
+    var pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    var edge = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    var most = line * NOTE_LINES + pad + edge;
+    var want = box.scrollHeight + edge;
+    box.style.height = Math.min(want, most) + "px";
+    box.style.overflowY = want > most ? "auto" : "hidden";
+  }
+
+  var noteFormFilter = null; // the filter the form was last set up for
+  var notePlanKey = "";
+
+  // The writing box at the top: organisation preset from the filter, plans of that organisation.
+  function syncNoteForm() {
+    var space = $("note-space");
+    if (!space.options.length) {
+      [["", "Choose organisation"], ["metaculus", "Metaculus"], ["cea", "CEA"], ["personal", "Personal"]].forEach(function (x) {
+        var o = el("option", null, x[1]);
+        o.value = x[0];
+        space.appendChild(o);
+      });
+      space.options[0].disabled = true;
+    }
+    if (noteFormFilter !== state.filter) {
+      noteFormFilter = state.filter;
+      space.value = state.filter !== "all" ? state.filter : (state.noteSpace || "");
+    }
+    space.options[0].hidden = state.filter !== "all";
+    var plans = $("note-plan");
+    var key = space.value + "|" + state.projects.filter(function (p) { return p.space === space.value; })
+      .map(function (p) { return p.id + ":" + p.name + ":" + !!p.is_plan; }).join("|");
+    if (key !== notePlanKey) {
+      notePlanKey = key;
+      planOptions(plans, space.value, plans.value);
+    }
+  }
+
+  async function saveNote() {
+    var problem = $("note-error");
+    problem.hidden = true;
+    var box = $("note-body");
+    var body = box.value.trim();
+    if (!body) { box.focus(); return; }
+    var space = $("note-space").value;
+    if (!space) {
+      problem.textContent = "Choose an organisation first.";
+      problem.hidden = false;
+      $("note-space").focus();
+      return;
+    }
+    var projectIdValue = planChoice($("note-plan"));
+    state.noteSpace = space;
+    var stamp = new Date().toISOString();
+    // Shown at once; if the save fails you are told and the words go back into the box.
+    var temp = { id: "new-" + Date.now(), temp: true, pending: true, space: space, project_id: projectIdValue, body: body, pinned: false, created_at: stamp, updated_at: stamp };
+    state.notes.unshift(temp);
+    box.value = "";
+    grow(box);
+    $("note-plan").value = "";
+    render();
+    var res = await sb.from("notes").insert({ space: space, project_id: projectIdValue, body: body, pinned: false }).select("id, space, project_id, body, pinned, created_at, updated_at").single();
+    var at = state.notes.indexOf(temp);
+    var failed = null;
+    if (res.error || !res.data) {
+      if (at >= 0) state.notes.splice(at, 1);
+      failed = "That did not save: " + (res.error ? res.error.message : "unknown error");
+      if (!box.value) { box.value = body; grow(box); }
+    } else if (at >= 0) {
+      state.notes[at] = res.data;
+    }
+    render();
+    await load();
+    if (failed) notice(failed); // after the reload, which clears notices
+  }
+
+  async function updateNote(id, changes) {
+    var n = noteById(id);
+    if (n) { Object.keys(changes).forEach(function (k) { n[k] = changes[k]; }); render(); }
+    var res = await sb.from("notes").update(changes).eq("id", id);
+    await load();
+    if (res.error) notice("That did not save: " + res.error.message);
+  }
+
+  async function deleteNote(id) {
+    state.noteAsk = null;
+    delete state.openNotes[id];
+    state.notes = state.notes.filter(function (n) { return n.id !== id; });
+    render();
+    var res = await sb.from("notes").delete().eq("id", id);
+    await load();
+    if (res.error) notice("That did not save: " + res.error.message);
+  }
+
+  function noteTop(n) {
+    var top = el("div", "card-top");
+    top.appendChild(el("span", "tag tag-" + n.space, spaceLabel(n.space)));
+    var plan = projectById(n.project_id);
+    if (plan) top.appendChild(el("span", "kind", plan.name));
+    top.appendChild(el("span", "meta", noteDate(n.created_at)));
+    if (n.pinned) top.appendChild(el("span", "flag pin-flag", "Pinned"));
+    return top;
+  }
+
+  // The card turns into a box for the words and a plan picker, in place.
+  function editNote(n) {
+    var id = n.id;
+    var node = el("article", "card note editing");
+    node.setAttribute("data-note", id);
+    node.appendChild(noteTop(n));
+    var ta = el("textarea", "note-edit");
+    ta.value = n.body;
+    ta.rows = 3;
+    ta.maxLength = 20000;
+    ta.setAttribute("aria-label", "Edit note");
+    ta.addEventListener("input", function () { grow(ta); });
+    node.appendChild(ta);
+    var row = el("div", "note-row");
+    var pick = document.createElement("select");
+    pick.setAttribute("aria-label", "Plan");
+    planOptions(pick, n.space, n.project_id);
+    row.appendChild(pick);
+    var save = function () {
+      var body = ta.value.trim();
+      if (!body) { ta.focus(); return; }
+      var current = noteById(id);
+      state.noteEdit = null;
+      if (!current) { notice("That note is gone."); render(); return; }
+      updateNote(id, { body: body, project_id: planChoice(pick), updated_at: new Date().toISOString() });
+    };
+    ta.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); save(); }
+    });
+    row.appendChild(button("Save", "primary", save));
+    row.appendChild(button("Cancel", "btn subtle", function () { state.noteEdit = null; render(); }));
+    node.appendChild(row);
+    state.noteEdit = { id: id, node: node };
+    render();
+    grow(ta);
+    ta.focus();
+  }
+
+  function noteIsLong(body) {
+    return body.length > 100 || body.split("\n").length > NOTE_LINES;
+  }
+
+  function noteCard(n) {
+    if (state.noteEdit && state.noteEdit.id === n.id) return state.noteEdit.node; // keeps what you are typing
+    var node = el("article", "card note" + (n.pinned ? " is-pinned" : ""));
+    node.setAttribute("data-note", n.id);
+    node.appendChild(noteTop(n));
+    var long = noteIsLong(n.body);
+    var open = long && !!state.openNotes[n.id];
+    if (open) {
+      var full = el("div", "fold-body");
+      full.appendChild(el("p", "note-text", n.body));
+      node.appendChild(full);
+    } else {
+      node.appendChild(el("p", "note-text" + (long ? " clamped" : ""), n.body));
+    }
+    if (long) {
+      node.appendChild(button(open ? "Show less" : "Show all", "quiet note-more", function () {
+        if (state.openNotes[n.id]) delete state.openNotes[n.id]; else state.openNotes[n.id] = true;
+        node.replaceWith(noteCard(n));
+        fitNotes();
+      }));
+    }
+    var actions = el("div", "actions");
+    if (state.noteAsk === n.id) {
+      actions.appendChild(el("span", "note-ask", "Delete this note?"));
+      actions.appendChild(button("Delete", "btn danger", function () { deleteNote(n.id); }));
+      actions.appendChild(button("Keep", "btn", function () { state.noteAsk = null; render(); }));
+    } else {
+      var pin = button(n.pinned ? "Unpin" : "Pin", "btn", function () {
+        updateNote(n.id, { pinned: !n.pinned, updated_at: new Date().toISOString() });
+      });
+      var edit = button("Edit", "btn", function () { editNote(n); });
+      var del = button("Delete", "btn subtle", function () { state.noteAsk = n.id; render(); });
+      if (n.temp) { pin.disabled = true; edit.disabled = true; del.disabled = true; }
+      actions.appendChild(pin);
+      actions.appendChild(edit);
+      actions.appendChild(del);
+    }
+    node.appendChild(actions);
+    return node;
+  }
+
+  // "Show all" only where the text really is cut; this needs the notes to be on screen.
+  function fitNotes() {
+    document.querySelectorAll("#list-notes .note-text.clamped").forEach(function (t) {
+      var more = t.parentElement.querySelector(".note-more");
+      if (more) more.hidden = t.scrollHeight <= t.clientHeight + 1;
+    });
+  }
+
+  // Draws the Notes list: pinned first, then the rest, newest first. Returns how many notes it shows.
+  function renderNotes() {
+    syncNoteForm();
+    var list = $("list-notes");
+    var active = document.activeElement;
+    var keepFocus = state.noteEdit && state.noteEdit.node.contains(active) ? active : null;
+    list.textContent = "";
+    var shown = state.notes.filter(function (n) {
+      if (state.filter !== "all" && n.space !== state.filter) return false;
+      var plan = projectById(n.project_id);
+      return hit([n.body, plan && plan.name]);
+    }).sort(function (a, b) {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return notesNewest(a, b);
+    });
+    shown.forEach(function (n) { list.appendChild(noteCard(n)); });
+    if (!shown.length && !needles.length) list.appendChild(el("p", "empty", "No notes here yet."));
+    if (keepFocus) keepFocus.focus({ preventScroll: true });
+    return shown.length;
+  }
+
+  // The first lines of a note, for the list inside a plan.
+  function firstLines(body) {
+    var text = body.split("\n").map(function (l) { return l.trim(); }).filter(Boolean).slice(0, 2).join(" · ");
+    return text.length > 160 ? text.slice(0, 160).trim() + "…" : text;
+  }
+
+  function showNotesFor(p) {
+    state.query = p.name;
+    $("search").value = p.name;
+    state.view = "notes";
+    writePref("desk.view", "notes");
+    render();
+    window.scrollTo(0, 0);
   }
 
   // ---------- Data ----------
@@ -1922,6 +2324,10 @@
           .neq("status", "cancelled")
           .order("starts_at", { ascending: true })
           .limit(200),
+        sb.from("notes")
+          .select("id, space, project_id, body, pinned, created_at, updated_at")
+          .order("created_at", { ascending: false })
+          .limit(500),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -1931,17 +2337,20 @@
       state.tasks = results[3].data || [];
       state.projects = results[4].data || [];
       state.meetings = results[5].data || [];
+      // A note you just saved stays on screen until the database has it.
+      state.notes = (results[6].data || []).concat(state.notes.filter(function (n) { return n.pending; }));
       var items = results[0].data || [];
       state.people = await loadPeople(items);
       announceNew(items);
       state.items = items;
 
       // The owner can always see the two workspace rows; nobody else can see any.
-      notice((results[2].data || []).length ? "" : "This sign-in does not have access to the Desk.");
+      if (!(results[2].data || []).length) notice("This sign-in does not have access to the Desk.", true);
+      else if (state.noticeFromLoad) notice("");
       render();
       $("updated").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " · version " + VERSION;
     } catch (err) {
-      notice("Could not load the Desk: " + (err && err.message ? err.message : "unknown error") + ". Retrying.");
+      notice("Could not load the Desk: " + (err && err.message ? err.message : "unknown error") + ". Retrying.", true);
     } finally {
       state.loading = false;
       if (state.loadAgain) {
@@ -1963,11 +2372,16 @@
     });
     var list = Object.keys(ids);
     var out = {};
+    // The key people are always loaded, even when none of them wrote anything on the page.
+    var keysAsked = sb.from("people").select("space, slack_user_id, name, is_vip, is_key").eq("is_key", true); // runs alongside the rest
     for (var i = 0; i < list.length; i += 150) {
-      var res = await sb.from("people").select("space, slack_user_id, name, is_vip").in("slack_user_id", list.slice(i, i + 150));
+      var res = await sb.from("people").select("space, slack_user_id, name, is_vip, is_key").in("slack_user_id", list.slice(i, i + 150));
       if (res.error) throw new Error(res.error.message);
       (res.data || []).forEach(function (p) { out[p.space + ":" + p.slack_user_id] = p; });
     }
+    var keys = await keysAsked;
+    if (keys.error) throw new Error(keys.error.message);
+    (keys.data || []).forEach(function (p) { out[p.space + ":" + p.slack_user_id] = p; });
     return out;
   }
 
@@ -2027,6 +2441,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }
         else setLive("Reconnecting", false);
@@ -2171,6 +2586,14 @@
     fold.querySelector("summary").addEventListener("click", function () { state.folds[id] = !fold.open; });
   });
 
+  $("note-form").addEventListener("submit", function (event) { event.preventDefault(); saveNote(); });
+  $("note-body").addEventListener("input", function () { grow($("note-body")); });
+  $("note-body").addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); saveNote(); }
+  });
+  $("note-space").addEventListener("change", function () { $("note-error").hidden = true; syncNoteForm(); });
+  window.addEventListener("resize", function () { if (state.view === "notes") fitNotes(); });
+
   $("alerts").addEventListener("click", function () {
     Notification.requestPermission().then(refreshAlertsButton);
   });
@@ -2190,6 +2613,7 @@
         if (state.channel) { sb.removeChannel(state.channel); state.channel = null; }
         state.items = [];
         state.meetings = [];
+        state.notes = [];
         state.seen = null;
         show(false);
       }
