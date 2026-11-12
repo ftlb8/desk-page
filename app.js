@@ -55,6 +55,8 @@
     startAsk: {},     // starts where you are being asked about writing it again
     startHold: {},    // ids of starts with a save on its way
     copied: {},       // starts whose draft was just copied
+    sendFlow: {},     // "item:7" -> { phase: checking | confirm | blocked | failed | sending, text, to, reason, error } while a reply is being sent
+    sent: {},         // start id -> { at, to } for replies sent from this page (a load also brings sent_at)
     fresh: { starts: {}, covers: {} }, // rows just received from a function, kept until a load has them too
     people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
@@ -2744,6 +2746,7 @@
   async function runStart(kind, id, redo) {
     var key = startKey(kind, id);
     if (state.starting[key]) return;
+    if (redo && (sendBusy(key) || startSent(startFor(kind, id)))) return; // a draft that is being sent or was sent is never replaced
     state.starting[key] = true;
     delete state.startAsk[key];
     render();
@@ -2777,7 +2780,9 @@
     if (res.error) {
       notice("That did not save: " + res.error.message);
       await load();
+      return false;
     }
+    return true;
   }
 
   function hasBrackets(text) {
@@ -2787,6 +2792,7 @@
   // The draft box of a start in one place on the page. It is created once and moved into each new panel.
   function draftBox(key, where, row) {
     var id = key + "|" + where;
+    var locked = draftLocked(key, row);
     var ta = startBoxes[id];
     if (!ta) {
       ta = document.createElement("textarea");
@@ -2801,27 +2807,30 @@
         ta._dirty = true;
         ta._rev++;
         fitDraft(ta);
-        if (ta._hint) ta._hint.hidden = !hasBrackets(ta.value);
+        if (ta._refresh) ta._refresh();
         clearTimeout(ta._t);
         ta._t = setTimeout(function () { flushDraft(ta); }, 1000);
       });
       ta.addEventListener("blur", function () { flushDraft(ta); });
       ta.value = row.draft || "";
       startBoxes[id] = ta;
-    } else if (!ta._dirty && document.activeElement !== ta && ta.value !== (row.draft || "")) {
+    } else if (!locked && !ta._dirty && document.activeElement !== ta && ta.value !== (row.draft || "")) {
       ta.value = row.draft || "";
     }
+    ta.readOnly = locked; // while a reply is being checked, confirmed or sent, or after it was sent, the words cannot change
     ta._startId = row.id;
     return ta;
   }
 
   // Saves what is in the draft box, if it changed.
+  // Answers with true when nothing is left unsaved.
   function flushDraft(ta) {
     clearTimeout(ta._t);
-    if (!ta._dirty) return;
+    if (!ta._dirty) return Promise.resolve(true);
     var rev = ta._rev;
-    saveStartFields(ta._startId, { draft: ta.value }, true).then(function () {
-      if (ta._rev === rev) ta._dirty = false;
+    return saveStartFields(ta._startId, { draft: ta.value }, true).then(function (saved) {
+      if (saved !== false && ta._rev === rev) ta._dirty = false;
+      return saved !== false;
     });
   }
 
@@ -2867,6 +2876,186 @@
     state.copied[key] = done ? "done" : "select";
     render();
     setTimeout(function () { delete state.copied[key]; render(); }, 1800);
+  }
+
+  // ---------- Send: the only control on this page that sends something for you ----------
+
+  // The sent state of a start: { at, to } once its draft went out, else null. `to` is empty for a start sent earlier.
+  function startSent(row) {
+    if (!row) return null;
+    var mine = state.sent[row.id];
+    if (mine) return mine;
+    return row.sent_at ? { at: row.sent_at, to: "" } : null;
+  }
+
+  // True while a reply is being checked, confirmed or sent for this start.
+  function sendBusy(key) {
+    var f = state.sendFlow[key];
+    return !!f && (f.phase === "checking" || f.phase === "confirm" || f.phase === "sending");
+  }
+
+  // The draft cannot be edited while its reply is in progress, or once it was sent.
+  function draftLocked(key, row) {
+    return sendBusy(key) || !!startSent(row);
+  }
+
+  var SEND_FAIL = "The reply was not sent. Nothing changed.";
+  var SEND_UNSURE = "The connection dropped, so the Desk cannot tell whether the reply went out. Check the message before you try again.";
+
+  // The plain words from a failed function call; { words, sure } where sure is false when no answer came back at all.
+  async function failureWords(res, fallback) {
+    var data = res && res.data;
+    if (data && data.ok === false && typeof data.error === "string" && data.error.trim()) return { words: data.error.trim(), sure: true };
+    var err = res && res.error;
+    var reply = err && err.context;
+    if (reply && typeof reply.json === "function") {
+      try {
+        var body = await reply.json();
+        if (body && typeof body.error === "string" && body.error.trim()) return { words: body.error.trim(), sure: true };
+      } catch (_) { /* no readable words */ }
+      return { words: fallback, sure: true };
+    }
+    return { words: fallback, sure: !err && !!data }; // an answer that said no, or no answer at all
+  }
+
+  function sendLabel(row) {
+    return row.draft_kind === "email" ? "Send email" : "Send in Slack";
+  }
+
+  // Step 1 and 2: save the draft, then ask the function who would get it. Sends nothing.
+  async function beginSend(key, itemId, ta) {
+    if (state.sendFlow[key] || state.starting[key]) return; // one flow at a time
+    var row = startFor("item", itemId);
+    if (!row || startSent(row)) return;
+    var flow = { phase: "checking" };
+    state.sendFlow[key] = flow;
+    delete state.startAsk[key];
+    render();
+    var text = "";
+    var res = null;
+    var problem = null;
+    if (!(await flushDraft(ta))) {
+      problem = "The draft did not save, so it was not checked. Nothing was sent.";
+    } else {
+      text = ta.value; // the box is read-only now, so this is what was saved
+      if (!text.trim() || hasBrackets(text)) {
+        delete state.sendFlow[key];
+        render();
+        return;
+      }
+      try {
+        res = await sb.functions.invoke("send-reply", { body: { mode: "preview", item_id: itemId } });
+      } catch (e) {
+        res = { error: e };
+      }
+    }
+    if (state.sendFlow[key] !== flow) return;
+    var pv = res && !res.error && res.data && res.data.ok === true ? res.data.preview : null;
+    if (problem) {
+      flow.phase = "failed";
+      flow.error = problem;
+    } else if (!pv || typeof pv !== "object") {
+      var f = await failureWords(res, "The Desk could not check where this reply would go. Nothing was sent.");
+      flow.phase = "failed";
+      flow.error = f.words;
+    } else if (pv.can_send !== true) {
+      flow.phase = "blocked";
+      flow.reason = typeof pv.reason === "string" && pv.reason.trim() ? pv.reason.trim() : "This reply cannot be sent from here. Nothing was sent.";
+    } else if (typeof pv.recipient !== "string" || !pv.recipient.trim() || (pv.kind && row.draft_kind && pv.kind !== row.draft_kind)) {
+      flow.phase = "failed";
+      flow.error = "The Desk could not confirm who would get this reply. Nothing was sent.";
+    } else {
+      flow.phase = "confirm";
+      flow.text = text;
+      flow.to = pv.recipient.trim();
+      flow.note = typeof pv.note === "string" && pv.note.trim() ? pv.note.trim() : ""; // shown only; never added to the text
+    }
+    render();
+    focusSendBox(key);
+  }
+
+  // GUARANTEES, for the one place on this page that sends a message for you:
+  //  1. The send call (the one with mode "send") is made in exactly one place: the line marked SEND CALL below,
+  //     in this function, which only the "Send now" button's click handler calls. No redraw, load, timer,
+  //     keyboard shortcut, live update or preview calls it, and nothing else on the page sends.
+  //  2. One click makes at most one send call: the flow is switched to "sending" before anything is awaited,
+  //     and a flow that is not in the "confirm" phase returns at once. Nothing ever retries by itself.
+  //  3. The text sent is flow.text, the very text shown in the confirmation box.
+  //  4. Enter or Ctrl+Enter in the draft never sends; no key handler on this page sends anything.
+  async function sendNow(key, itemId) {
+    var flow = state.sendFlow[key];
+    if (!flow || flow.phase !== "confirm") return;
+    var row = startFor("item", itemId);
+    if (!row || startSent(row) || typeof flow.text !== "string") return;
+    flow.phase = "sending";
+    render();
+    var res;
+    try {
+      var requestId = crypto.randomUUID();
+      res = await sb.functions.invoke("send-reply", { body: { mode: "send", item_id: itemId, text: flow.text, request_id: requestId } }); // SEND CALL
+    } catch (e) {
+      res = { error: e };
+    }
+    var sent = res && !res.error && res.data && res.data.ok === true ? res.data.sent : null;
+    if (sent && typeof sent === "object") {
+      state.sent[row.id] = { at: sent.sent_at || new Date().toISOString(), to: typeof sent.recipient === "string" ? sent.recipient : flow.to };
+      row.sent_at = state.sent[row.id].at;
+      delete state.sendFlow[key];
+      delete state.startAsk[key];
+      notice("");
+    } else {
+      var f = await failureWords(res, SEND_FAIL);
+      flow.phase = "failed";
+      flow.error = f.sure ? f.words : SEND_UNSURE;
+    }
+    render();
+    focusSendBox(key);
+    load(); // brings the sent time and the closed item; sends nothing
+  }
+
+  function focusSendBox(key) {
+    var box = onPage('[data-start-panel="' + key + '"] [data-send-box]');
+    if (box) box.focus();
+  }
+
+  // Under the draft: the question and the exact text, or why it cannot be sent, or that it was sent.
+  function sendBox(key, itemId, row) {
+    var done = startSent(row);
+    if (done) {
+      var line = done.to ? "Sent " + noteDate(done.at) + " to " + done.to : "Sent " + noteDate(done.at);
+      var ok = el("p", "send-sent", line);
+      ok.setAttribute("role", "status");
+      return ok;
+    }
+    var flow = state.sendFlow[key];
+    if (!flow || flow.phase === "checking") return null;
+    var box = el("div", "send-box");
+    box.setAttribute("data-send-box", key);
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", "Send this reply");
+    box.tabIndex = -1;
+    var close = function () { delete state.sendFlow[key]; render(); };
+    var foot = el("div", "actions");
+    if (flow.phase === "confirm" || flow.phase === "sending") {
+      var sending = flow.phase === "sending";
+      box.appendChild(el("p", "send-ask", "Send this reply?"));
+      box.appendChild(el("p", "send-to", "To: " + flow.to));
+      box.appendChild(el("div", "send-text", flow.text));
+      if (flow.note) box.appendChild(el("p", "fine send-note", flow.note));
+      var go = button(sending ? "Sending..." : "Send now", "primary", function () { sendNow(key, itemId); });
+      go.disabled = sending;
+      var back = button("Keep editing", "btn subtle", close);
+      back.disabled = sending;
+      foot.appendChild(go);
+      foot.appendChild(back);
+    } else {
+      var why = el("p", flow.phase === "failed" ? "send-why error" : "send-why", flow.phase === "failed" ? flow.error : flow.reason);
+      if (flow.phase === "failed") why.setAttribute("role", "alert");
+      box.appendChild(why);
+      foot.appendChild(button("Close", "btn", close));
+    }
+    box.appendChild(foot);
+    return box;
   }
 
   function startPanel(kind, id, where) {
@@ -2924,19 +3113,39 @@
         head.appendChild(document.createTextNode(" "));
         head.appendChild(el("span", "kind", row.draft_kind === "slack" ? "Slack" : "Email"));
       }
+      var sentNow = startSent(row);
+      if (sentNow) {
+        head.appendChild(document.createTextNode(" "));
+        head.appendChild(el("span", "kind sent-tag", "Sent"));
+      }
       panel.appendChild(head);
       var ta = draftBox(key, where, row);
       panel.appendChild(ta);
       var tools = el("div", "actions");
       var mark = state.copied[key];
       tools.appendChild(button(mark === "done" ? "Copied" : mark === "select" ? "Selected, now copy it" : "Copy", "btn", function () { copyDraft(key, ta); }));
+      // Send exists only here: the panel of an inbox item or suggestion that has a message and a draft for it.
+      var sendBtn = null;
+      if (kind === "item" && source && source.messages && (row.draft_kind === "email" || row.draft_kind === "slack") && !sentNow) {
+        var flow = state.sendFlow[key];
+        var checking = !!flow && flow.phase === "checking";
+        sendBtn = button(checking ? "Checking..." : sendLabel(row), "btn", function () { beginSend(key, id, ta); });
+        sendBtn.setAttribute("data-send", key);
+        tools.appendChild(sendBtn);
+      }
       var link = source ? sourceLink(source) : null;
       if (link) tools.appendChild(linkTo(link.href, link.label, "btn"));
       panel.appendChild(tools);
-      panel.appendChild(el("p", "fine", "Nothing is sent from here. Copy it, or open the message to reply."));
+      var box = sendBox(key, id, row);
+      if (box) panel.appendChild(box);
+      panel.appendChild(el("p", "fine", "Nothing is sent until you press Send and confirm."));
       var hint = el("p", "fine", "Fill in the parts in [brackets] before you use it.");
-      hint.hidden = !hasBrackets(ta.value);
-      ta._hint = hint;
+      ta._refresh = function () {
+        var open = hasBrackets(ta.value) && !sentNow;
+        hint.hidden = !open;
+        if (sendBtn) sendBtn.disabled = busy || !!state.sendFlow[key] || !ta.value.trim() || hasBrackets(ta.value);
+      };
+      ta._refresh();
       panel.appendChild(hint);
     }
 
@@ -2950,7 +3159,7 @@
       foot.appendChild(button("Write again", "btn", function () { runStart(kind, id, true); }));
       foot.appendChild(button("Keep", "btn", function () { delete state.startAsk[key]; render(); }));
     } else {
-      foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
+      if (!startSent(row) && !sendBusy(key)) foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
       foot.appendChild(button("Hide", "btn subtle", function () { delete state.startOpen[key]; delete state.startAsk[key]; render(); }));
     }
     panel.appendChild(foot);
@@ -2998,7 +3207,7 @@
           .order("created_at", { ascending: false })
           .limit(500),
         sb.from("cover_reviews").select("space, review, points, written_at"),
-        sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, updated_at"),
+        sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at"),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -3296,6 +3505,8 @@
         state.notes = [];
         state.covers = [];
         state.starts = [];
+        state.sendFlow = {};
+        state.sent = {};
         state.seen = null;
         show(false);
       }

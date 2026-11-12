@@ -511,10 +511,26 @@ textarea.start-draft {
   display: block; width: 100%; min-height: 64px; margin-top: 6px; padding: 10px 12px; resize: none; overflow: hidden;
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; line-height: 1.45; color: inherit;
 }
+textarea.start-draft:read-only { background: transparent; color: var(--muted); }
+.kind.sent-tag { color: var(--ok, var(--accent)); border-color: currentColor; }
+.send-box { margin-top: 10px; padding: 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface); outline: none; }
+.send-box p { margin: 0; }
+.send-ask { font-weight: 600; }
+.send-to { margin-top: 4px !important; overflow-wrap: anywhere; }
+.send-text {
+  margin-top: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); line-height: 1.45;
+}
+.send-note { margin-top: 6px !important; }
+.send-why { overflow-wrap: anywhere; }
+.send-sent { margin: 10px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.start-panel .send-box .primary { padding: 8px 18px; }
 .row-start { display: none; }
 @media (max-width: 600px) {
   textarea.start-draft { font-size: 16px; }
   .start-panel .actions .btn { min-height: 40px; }
+  .start-panel .send-box .primary { min-height: 44px; flex: 1 1 100%; }
+  .start-panel .send-box .btn { min-height: 44px; flex: 1 1 100%; }
 }
 
 @media (min-width: 1000px) {
