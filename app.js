@@ -26,6 +26,7 @@
     { id: "planning", label: "Planning" },
     { id: "meetings", label: "Meetings" },
     { id: "notes", label: "Notes" },
+    { id: "links", label: "Links" },
   ];
   var DAY = 24 * 60 * 60 * 1000;
   var SEEN_KEY = "desk.runs-seen";
@@ -46,6 +47,12 @@
     openNotes: {},    // ids of long notes you opened in full
     noteAsk: null,    // id of the note you are being asked about deleting
     noteEdit: null,   // { id, node } while a note is being edited in place
+    links: [],        // the quick links, ordered by organisation, position and id
+    linksEditing: false, // the Edit toggle of the Links view
+    linkEdit: null,   // { id, node } while a link is being edited in place
+    linkAsk: null,    // id of the link you are being asked about removing
+    linkSpace: null,  // the organisation you last added a link for in this session
+    linkBusy: false,  // an add is on its way
     noteSpace: null,  // the organisation you last saved a note for in this session
     openInbox: {},    // inbox sections you closed (false) or opened (true); all start open
     openMeetings: {}, // ids of meetings whose details you opened
@@ -83,7 +90,7 @@
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
-    view: "today", // the page always opens on Today; today | inbox | tasks | planning | meetings | notes
+    view: "today", // the page always opens on Today; today | inbox | tasks | work | planning | meetings | notes | links
     taskMode: readPref("desk.task-mode", "list"), // list | days
     project: null, // show only this project's tasks
     seen: null,   // ids already shown, to tell which waiting items are new
@@ -779,6 +786,7 @@
 
   function render() {
     var typing = captureDraftFocus();
+    markLooked();
     needles = plain(state.query).split(/\s+/).filter(Boolean);
     var searching = needles.length > 0;
     var found = 0;
@@ -824,7 +832,8 @@
     var noteRows = renderNotes();
     var todayRows = renderToday();
     var workRows = renderWork();
-    var lists = state.view !== "meetings" && state.view !== "notes" && state.view !== "work";
+    var linkRows = renderLinks();
+    var lists = state.view !== "meetings" && state.view !== "notes" && state.view !== "work" && state.view !== "links";
     $("box-later").hidden = !lists || inTasks || !groups.later.length;
     $("box-closed").hidden = !lists || inTasks || !groups.closed.length;
 
@@ -836,6 +845,7 @@
     else if (state.view === "planning") found += groups.decision.length + planRows;
     else if (state.view === "notes") found += noteRows;
     else if (state.view === "work") found += workRows;
+    else if (state.view === "links") found += linkRows;
     else found += meetingCards;
 
     document.querySelectorAll("[data-view]").forEach(function (section) {
@@ -878,11 +888,18 @@
     SPACES.forEach(function (s) {
       var n = s.id === "all" ? totalWaiting : (waitingBySpace[s.id] || 0);
       var b = button(s.label + (n ? " " + n : ""), "filter" + (state.filter === s.id ? " on" : ""), function () {
+        markLooked(); // leaving an organisation counts as having looked at it
         state.filter = s.id;
         writePref("desk.space", s.id);
         render();
       });
       b.setAttribute("aria-pressed", state.filter === s.id ? "true" : "false");
+      if (s.id !== "all" && state.filter !== s.id && hasUpdates(s.id)) {
+        var dot = el("span", "upd-dot");
+        dot.setAttribute("role", "img");
+        dot.setAttribute("aria-label", "has updates");
+        b.appendChild(dot);
+      }
       nav.appendChild(b);
     });
     restoreDraftFocus(typing);
@@ -1693,7 +1710,7 @@
 
   function taskRow(task, where) {
     var isOpen = !!state.openTasks[task.id];
-    var row = el("div", "trow" + (task.status === "done" ? " is-done" : "") + (isOpen ? " is-open" : ""));
+    var row = el("div", "trow" + (task.status === "done" ? " is-done" : "") + (isOpen ? " is-open" : "") + (task.urgent && task.status === "open" ? " is-urgent" : ""));
     row.setAttribute("data-task", task.id);
     var tick = document.createElement("input");
     tick.type = "checkbox";
@@ -2423,6 +2440,304 @@
     if (!shown.length && !needles.length) list.appendChild(el("p", "empty", "No notes here yet."));
     if (keepFocus) keepFocus.focus({ preventScroll: true });
     return shown.length;
+  }
+
+  // ---------- Update sign on the organisations ----------
+
+  var LOOKED_KEY = "desk.looked.";
+  var lookedMemory = {}; // organisation -> when you last looked at it; used when the browser will not store it
+
+  function lookedAt(space) {
+    var stored = parseInt(readPref(LOOKED_KEY + space, ""), 10);
+    var mem = lookedMemory[space] || 0;
+    return Math.max(isNaN(stored) ? 0 : stored, mem);
+  }
+
+  // Looking at an organisation means it is the chosen one (or All is chosen) while the page is showing.
+  function markLooked() {
+    if (document.hidden) return;
+    var now = Date.now();
+    SPACES.forEach(function (s) {
+      if (s.id === "all" || (state.filter !== "all" && state.filter !== s.id)) return;
+      lookedMemory[s.id] = now;
+      writePref(LOOKED_KEY + s.id, String(now));
+    });
+  }
+
+  function stampOf(iso) {
+    var t = Date.parse(iso);
+    return isNaN(t) ? 0 : t;
+  }
+
+  // True when this organisation has something that needs you that is newer than your last look:
+  // an open item in "Needs you", a run waiting for you, or a run that has finished.
+  function hasUpdates(space) {
+    var since = lookedAt(space);
+    if (!since) return false; // never looked yet: nothing counts as new
+    var item = state.items.some(function (i) {
+      return i.space === space && i.status === "open" && i.lane === "waiting" && stampOf(i.created_at) > since;
+    });
+    if (item) return true;
+    return state.runs.some(function (r) {
+      if (r.space !== space) return false;
+      var t = r.status === "needs_you" ? stampOf(r.updated_at || r.finished_at)
+        : (r.status === "done" || r.status === "failed") ? stampOf(r.finished_at || r.updated_at) : 0;
+      return t > since;
+    });
+  }
+
+  // On the first visit nothing is new: every organisation starts as looked at.
+  function startLooked() {
+    var now = Date.now();
+    SPACES.forEach(function (s) {
+      if (s.id !== "all" && !lookedAt(s.id)) { lookedMemory[s.id] = now; writePref(LOOKED_KEY + s.id, String(now)); }
+    });
+  }
+
+  // ---------- Links ----------
+
+  var LINK_FAIL = "That did not save: ";
+
+  function linkOrder(a, b) {
+    var ids = SPACES.map(function (s) { return s.id; });
+    var sa = ids.indexOf(a.space);
+    var sb2 = ids.indexOf(b.space);
+    if (sa !== sb2) return sa - sb2;
+    if ((a.position || 0) !== (b.position || 0)) return (a.position || 0) - (b.position || 0);
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  }
+
+  function linksOf(space) {
+    return state.links.filter(function (l) { return l.space === space; }).sort(linkOrder);
+  }
+
+  // Turns what you typed into a label and an https address, or says in plain words what is wrong.
+  function cleanLink(labelText, urlText) {
+    var label = String(labelText || "").trim();
+    var url = String(urlText || "").trim();
+    if (!label) return { error: "Give the link a name.", field: "label" };
+    if (label.length > 60) return { error: "The name can have at most 60 characters; yours has " + label.length + ".", field: "label" };
+    if (!url) return { error: "Type the address of the page.", field: "url" };
+    var hasScheme = /^[a-z][a-z0-9+.\-]*:\/\//i.test(url) || /^(javascript|data|vbscript|mailto|tel|sms|file|blob|about|ftp):/i.test(url);
+    if (!hasScheme) url = "https://" + url;
+    if (/\s/.test(url)) return { error: "The address cannot contain spaces.", field: "url" };
+    if (!/^https:\/\//i.test(url)) return { error: "Only addresses that start with https:// can be saved.", field: "url" };
+    url = "https://" + url.slice(8);
+    var parsed = F.safeUrl(url);
+    if (!parsed || parsed.indexOf("https:") !== 0 || url.length <= 8) return { error: "That does not look like a web address.", field: "url" };
+    if (url.length > 1000) return { error: "The address is too long; it can have at most 1000 characters.", field: "url" };
+    return { label: label, url: url };
+  }
+
+  var linkFormFilter = null;
+
+  // The Add form: organisation preset from the filter; with All you must choose one.
+  function syncLinkForm() {
+    var space = $("link-space");
+    fillSpaceChoices(space);
+    if (linkFormFilter !== state.filter) {
+      linkFormFilter = state.filter;
+      space.value = state.filter !== "all" ? state.filter : (state.linkSpace || "");
+    }
+    space.options[0].hidden = state.filter !== "all";
+  }
+
+  function linkProblem(node, text, field) {
+    node.textContent = text;
+    node.hidden = !text;
+    if (text && field) field.focus();
+  }
+
+  async function addLink() {
+    if (state.linkBusy) return;
+    var problem = $("link-error");
+    problem.hidden = true;
+    var space = $("link-space").value;
+    var made = cleanLink($("link-label").value, $("link-url").value);
+    if (made.error) { linkProblem(problem, made.error, $(made.field === "label" ? "link-label" : "link-url")); return; }
+    if (!space) { linkProblem(problem, "Choose an organisation first.", $("link-space")); return; }
+    state.linkBusy = true;
+    $("link-save").disabled = true;
+    var mine = linksOf(space);
+    var position = mine.length ? (mine[mine.length - 1].position || 0) + 1 : 0;
+    var res = await sb.from("quick_links").insert({ space: space, label: made.label, url: made.url, position: position }).select("id, space, label, url, position, created_at").single();
+    state.linkBusy = false;
+    $("link-save").disabled = false;
+    if (res.error || !res.data) {
+      linkProblem(problem, LINK_FAIL + (res.error ? res.error.message : "unknown error"), null);
+      return;
+    }
+    state.linkSpace = space;
+    state.links.push(res.data);
+    $("link-label").value = "";
+    $("link-url").value = "";
+    $("link-label").focus();
+    render();
+    await load();
+  }
+
+  async function saveLinkEdit(l, labelBox, urlBox, problem) {
+    var made = cleanLink(labelBox.value, urlBox.value);
+    if (made.error) { linkProblem(problem, made.error, made.field === "label" ? labelBox : urlBox); return; }
+    problem.hidden = true;
+    var res = await sb.from("quick_links").update({ label: made.label, url: made.url }).eq("id", l.id);
+    if (res.error) { linkProblem(problem, LINK_FAIL + res.error.message, null); return; }
+    l.label = made.label;
+    l.url = made.url;
+    state.linkEdit = null;
+    render();
+    await load();
+  }
+
+  // Swaps the link with its neighbour and rewrites the positions of that organisation's links as 0..n-1.
+  async function moveLink(l, step) {
+    var mine = linksOf(l.space);
+    var at = mine.indexOf(l);
+    var to = at + step;
+    if (at < 0 || to < 0 || to >= mine.length) return;
+    mine.splice(to, 0, mine.splice(at, 1)[0]);
+    var writes = [];
+    mine.forEach(function (x, i) {
+      if (x.position !== i) { x.position = i; writes.push(sb.from("quick_links").update({ position: i }).eq("id", x.id)); }
+    });
+    render();
+    var results = await Promise.all(writes);
+    var bad = results.filter(function (r) { return r && r.error; })[0];
+    await load();
+    if (bad) notice(LINK_FAIL + bad.error.message);
+  }
+
+  async function removeLink(l) {
+    state.linkAsk = null;
+    state.links = state.links.filter(function (x) { return x !== l; });
+    render();
+    var res = await sb.from("quick_links").delete().eq("id", l.id);
+    await load();
+    if (res.error) notice(LINK_FAIL + res.error.message);
+  }
+
+  // The tile turns into a small form, in place. The node is kept so that what you type survives redraws.
+  function editLink(l) {
+    var node = el("div", "link-tile editing");
+    node.setAttribute("data-link", l.id);
+    var labelBox = el("input", "link-input");
+    labelBox.type = "text";
+    labelBox.maxLength = 60;
+    labelBox.value = l.label;
+    labelBox.setAttribute("aria-label", "Name");
+    var urlBox = el("input", "link-input");
+    urlBox.type = "text";
+    urlBox.maxLength = 1000;
+    urlBox.value = l.url;
+    urlBox.setAttribute("inputmode", "url");
+    urlBox.setAttribute("aria-label", "Address");
+    var problem = el("p", "error");
+    problem.setAttribute("role", "alert");
+    problem.hidden = true;
+    var save = function () { saveLinkEdit(l, labelBox, urlBox, problem); };
+    [labelBox, urlBox].forEach(function (box) {
+      box.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") { event.preventDefault(); save(); }
+        if (event.key === "Escape") { state.linkEdit = null; render(); }
+      });
+    });
+    node.appendChild(labelBox);
+    node.appendChild(urlBox);
+    node.appendChild(problem);
+    var row = el("div", "actions");
+    row.appendChild(button("Save", "primary", save));
+    row.appendChild(button("Cancel", "btn subtle", function () { state.linkEdit = null; render(); }));
+    node.appendChild(row);
+    state.linkEdit = { id: l.id, node: node };
+    render();
+    labelBox.focus();
+  }
+
+  function linkTile(l, index, count) {
+    if (state.linkEdit && state.linkEdit.id === l.id) return state.linkEdit.node;
+    var href = httpsLink(l.url);
+    var label = el("span", "link-label", l.label);
+    var where = el("span", "link-host", href ? F.host(href) : "Address cannot be opened");
+    if (!state.linksEditing) {
+      if (!href) {
+        var dead = el("div", "link-tile dead");
+        dead.setAttribute("data-link", l.id);
+        dead.appendChild(label);
+        dead.appendChild(where);
+        return dead;
+      }
+      var a = linkTo(href, "", "link-tile");
+      a.setAttribute("data-link", l.id);
+      a.appendChild(label);
+      a.appendChild(where);
+      return a;
+    }
+    var node = el("div", "link-tile editing");
+    node.setAttribute("data-link", l.id);
+    node.appendChild(label);
+    node.appendChild(where);
+    var actions = el("div", "actions");
+    if (state.linkAsk === l.id) {
+      actions.appendChild(el("span", "note-ask", "Remove this link?"));
+      actions.appendChild(button("Remove", "btn danger", function () { removeLink(l); }));
+      actions.appendChild(button("Keep", "btn", function () { state.linkAsk = null; render(); }));
+    } else {
+      actions.appendChild(button("Edit", "btn", function () { state.linkAsk = null; editLink(l); }));
+      var up = button("Move up", "btn", function () { moveLink(l, -1); });
+      up.disabled = index === 0;
+      var down = button("Move down", "btn", function () { moveLink(l, 1); });
+      down.disabled = index === count - 1;
+      actions.appendChild(up);
+      actions.appendChild(down);
+      actions.appendChild(button("Remove", "btn subtle", function () { state.linkAsk = l.id; render(); }));
+    }
+    node.appendChild(actions);
+    return node;
+  }
+
+  // Draws the Links view: the tiles of the chosen organisation, grouped by organisation under All. Returns how many tiles show.
+  function renderLinks() {
+    syncLinkForm();
+    var list = $("list-links");
+    var edit = $("links-edit");
+    edit.textContent = state.linksEditing ? "Done" : "Edit";
+    edit.setAttribute("aria-pressed", state.linksEditing ? "true" : "false");
+    var active = document.activeElement;
+    var keepFocus = state.linkEdit && state.linkEdit.node.contains(active) ? active : null;
+    // A tile (or one of its buttons) you reached with the keyboard stays focused after a redraw.
+    var focusId = null, focusText = null;
+    var focusTile = !keepFocus && list.contains(active) ? active.closest("[data-link]") : null;
+    if (focusTile) { focusId = focusTile.getAttribute("data-link"); focusText = active === focusTile ? null : active.textContent; }
+    list.textContent = "";
+    var total = 0;
+    var spaces = SPACES.filter(function (s) { return s.id !== "all" && (state.filter === "all" || state.filter === s.id); });
+    spaces.forEach(function (s) {
+      var all = linksOf(s.id);
+      var shown = all.filter(function (l) { return hit([l.label, F.host(l.url)]); });
+      if (!shown.length) return;
+      var group = el("div", "link-group");
+      if (state.filter === "all") group.appendChild(el("h3", "link-group-name", s.label));
+      var grid = el("div", "link-grid");
+      shown.forEach(function (l) { grid.appendChild(linkTile(l, all.indexOf(l), all.length)); });
+      group.appendChild(grid);
+      list.appendChild(group);
+      total += shown.length;
+    });
+    if (!total && !needles.length) {
+      list.appendChild(el("p", "empty", "Add the pages you open often, and they will be one tap away here."));
+    }
+    if (keepFocus && keepFocus.isConnected) keepFocus.focus({ preventScroll: true });
+    if (focusId !== null) {
+      var tiles = list.querySelectorAll("[data-link]");
+      for (var i = 0; i < tiles.length; i++) {
+        if (tiles[i].getAttribute("data-link") !== focusId) continue;
+        var target = focusText === null ? tiles[i] : null;
+        var buttons = tiles[i].querySelectorAll("button");
+        for (var j = 0; focusText !== null && j < buttons.length; j++) if (buttons[j].textContent === focusText && !buttons[j].disabled) target = buttons[j];
+        if (target) target.focus({ preventScroll: true });
+      }
+    }
+    return total;
   }
 
   // The first lines of a note, for the list inside a plan.
@@ -4173,6 +4488,7 @@
         sb.from("cover_reviews").select("space, review, points, written_at"),
         sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at"),
         sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50),
+        sb.from("quick_links").select("id, space, label, url, position, created_at").order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
       ]);
       var failed = results.slice(0, 9).filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -4188,6 +4504,9 @@
       state.starts = mergeStarts(results[8].data || []);
       // The runs are extra: if they cannot be read the rest of the Desk still loads, with the runs it had.
       if (!results[9].error) state.runs = mergeRuns(results[9].data || []);
+      // The links are extra too: if they cannot be read the rest of the Desk still loads.
+      if (!results[10].error) state.links = results[10].data || [];
+      else if (state.view === "links") notice("The links could not be read: " + results[10].error.message);
       syncRunPoll();
       var items = results[0].data || [];
       state.people = await loadPeople(items);
@@ -4292,6 +4611,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "quick_links" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "cover_reviews" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "runs" }, loadRunsSoon)
       .subscribe(function (status) {
@@ -4447,6 +4767,14 @@
     });
     $(pre + "space").addEventListener("change", function () { $(pre + "error").hidden = true; syncNoteForm(); });
   });
+  $("link-form").addEventListener("submit", function (event) { event.preventDefault(); addLink(); });
+  $("link-space").addEventListener("change", function () { $("link-error").hidden = true; });
+  $("links-edit").addEventListener("click", function () {
+    state.linksEditing = !state.linksEditing;
+    state.linkAsk = null;
+    state.linkEdit = null;
+    render();
+  });
   window.addEventListener("resize", function () {
     if (state.view === "notes") fitNotes();
     fitDrafts();
@@ -4456,6 +4784,7 @@
     Notification.requestPermission().then(refreshAlertsButton);
   });
 
+  startLooked();
   var started = false;
   sb.auth.onAuthStateChange(function (_event, session) {
     // Supabase asks that no other Supabase call is made inside this callback, so defer.
@@ -4472,6 +4801,10 @@
         state.items = [];
         state.meetings = [];
         state.notes = [];
+        state.links = [];
+        state.linkEdit = null;
+        state.linkAsk = null;
+        state.linksEditing = false;
         state.covers = [];
         state.starts = [];
         state.runs = [];
@@ -4491,5 +4824,7 @@
 
   // Safety net if the live connection drops, and to move "Later" items back when their time comes.
   setInterval(function () { if (started && !document.hidden) load(); }, 60000);
-  document.addEventListener("visibilitychange", function () { if (started && !document.hidden) load(); });
+  document.addEventListener("visibilitychange", function () {
+    if (started && !document.hidden) { markLooked(); load(); }
+  });
 })();
