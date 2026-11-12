@@ -205,7 +205,7 @@ details.tsec[open] > .tsec-head::before { transform: rotate(45deg); }
 .pill-slip { color: var(--slip); background: var(--slip-bg); border-color: transparent; font-weight: 650; }
 .trow-why { margin: 5px 0 0; color: var(--muted); font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trow-late { margin: 5px 0 0; color: var(--late); font-size: 0.86rem; }
-.trow .fold-body { grid-column: 2; margin-top: 10px; cursor: default; }
+.trow .fold-body { grid-column: 2 / -1; margin-top: 10px; cursor: default; }
 .task-open .pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 8px; }
 .task-open .owed-head { margin-top: 10px; }
 .task-open .hint { margin-top: 10px; overflow-wrap: anywhere; }
@@ -464,4 +464,62 @@ textarea.note-edit { margin-top: 8px; }
   .day-none .empty { margin-top: 8px; }
   .notes-list { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
   .notes-list > .empty { grid-column: 1 / -1; }
+}
+
+/* Today */
+.today-grid { margin-top: 20px; }
+.today-col { min-width: 0; }
+.tsec-name { margin: 0; }
+.tsec-head h2.tsec-name { font: inherit; text-transform: none; letter-spacing: 0; color: inherit; }
+.cv-pad { padding: 0 14px 14px; }
+.tsec-body.cv-pad > .empty { padding: 0; }
+.cv-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 0.9rem; }
+.cv-title { margin: 6px 0 2px; font-size: 1.4rem; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+.cv-when { margin: 0 0 4px; font-size: 1.02rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.btn.join.big { min-height: 46px; padding: 10px 28px; font-size: 1.05rem; }
+.cv-later-head { margin-top: 16px; }
+.cv-later { list-style: none; margin: 0; padding: 0; }
+.cv-later li { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 0.95rem; }
+.cv-later .cv-t { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cv-later .cv-n { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cv-join { flex: none; color: var(--accent); font-size: 0.9rem; font-weight: 600; text-underline-offset: 3px; }
+.cv-foot { padding: 6px 14px 12px; border-top: 1px solid var(--line); }
+.cv-foot .quiet { padding: 6px 0; }
+.tsec-head .cv-late { margin-left: auto; color: var(--late); font-weight: 650; font-size: 0.88rem; }
+.tsec-head .cv-late + .count { margin-left: 0; }
+.cv-org + .cv-org { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cv-review-text { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cv-points { list-style: none; margin: 8px 0 0; padding: 0; }
+.cv-point { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; font-size: 0.95rem; }
+.cv-point .kind { flex: none; }
+.cv-point .cv-ref, .cv-point .cv-plain { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 0.95rem; }
+.cv-point .cv-ref { color: var(--accent); cursor: pointer; }
+.cv-kind-decision { color: var(--today); border-color: var(--today); }
+.cv-kind-owed { color: var(--soon); border-color: var(--soon); }
+.cv-written { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 10px; font-size: 0.8rem; color: var(--muted); }
+.note-form.cv-pad { margin: 0; }
+#cv-note .note-form textarea { min-height: 56px; }
+
+/* Start: steps and a draft reply, opened under a card or row */
+.start-panel { cursor: default; }
+.start-panel .owed-head { margin-top: 12px; }
+.start-panel .owed-head:first-child { margin-top: 0; }
+.start-panel .pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 4px; }
+.start-panel .actions { margin-top: 10px; }
+.start-panel .fine { margin: 6px 0 0; }
+textarea.start-draft {
+  display: block; width: 100%; min-height: 64px; margin-top: 6px; padding: 10px 12px; resize: none; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; line-height: 1.45; color: inherit;
+}
+.row-start { display: none; }
+@media (max-width: 600px) {
+  textarea.start-draft { font-size: 16px; }
+  .start-panel .actions .btn { min-height: 40px; }
+}
+
+@media (min-width: 1000px) {
+  .today-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 20px; align-items: start; }
+  .trow { grid-template-columns: 26px minmax(0, 1fr) auto; }
+  .trow .row-start { display: inline-block; align-self: start; padding: 2px 0 2px 12px; font-size: 0.82rem; }
+  .trow.is-open > .row-start { display: none; }
 }

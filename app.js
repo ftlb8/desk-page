@@ -19,6 +19,7 @@
     { id: "personal", label: "Personal" },
   ];
   var VIEWS = [
+    { id: "today", label: "Today" },
     { id: "inbox", label: "Inbox" },
     { id: "tasks", label: "Tasks" },
     { id: "planning", label: "Planning" },
@@ -46,11 +47,20 @@
     reviewing: {},    // ids of plans whose review is running
     doneSuggestions: {}, // review suggestions that became tasks this session, keyed by plan id and text
     projects: [],
+    covers: [],       // the written review of how things stand, one row per organisation
+    starts: [],       // prepared steps (and draft replies) for items and tasks
+    covering: {},     // organisations whose review is being written
+    starting: {},     // "item:7" / "task:3" while Start is preparing
+    startOpen: {},    // starts whose panel you opened
+    startAsk: {},     // starts where you are being asked about writing it again
+    startHold: {},    // ids of starts with a save on its way
+    copied: {},       // starts whose draft was just copied
+    fresh: { starts: {}, covers: {} }, // rows just received from a function, kept until a load has them too
     people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
-    view: readPref("desk.view", "inbox"), // inbox | tasks | planning | meetings
+    view: "today", // the page always opens on Today; today | inbox | tasks | planning | meetings | notes
     taskMode: readPref("desk.task-mode", "list"), // list | days
     project: null, // show only this project's tasks
     seen: null,   // ids already shown, to tell which waiting items are new
@@ -61,8 +71,12 @@
 
   function $(id) { return document.getElementById(id); }
 
-  // An old saved choice (such as the former Commitments view) falls back to Inbox.
-  if (!VIEWS.some(function (v) { return v.id === state.view; })) state.view = "inbox";
+  // The first element for a selector that is in the view being shown (the same card can also sit in a hidden view).
+  function onPage(selector) {
+    var all = document.querySelectorAll(selector);
+    for (var i = 0; i < all.length; i++) if (!all[i].closest("[data-view][hidden]")) return all[i];
+    return null;
+  }
 
   function readPref(key, fallback) {
     try { return localStorage.getItem(key) || fallback; } catch (_) { return fallback; }
@@ -461,7 +475,8 @@
     return "Marked done";
   }
 
-  function card(item, kind) {
+  // `where` names the place the card is drawn in ("inbox", "today", "sug"); cards that can be started carry a Start button.
+  function card(item, kind, where) {
     var m = item.messages || {};
     var node = el("article", "card urgency-" + item.urgency);
     node.setAttribute("data-item", item.id);
@@ -530,6 +545,8 @@
     sourceLinks(item).forEach(function (link) {
       actions.appendChild(linkTo(link.href, link.label, "btn"));
     });
+    var canStart = !!where && (kind === "waiting" || kind === "look" || kind === "commit");
+    var startBtn = canStart ? startControl("item", item.id, "btn") : null;
     if (kind === "decision") {
       actions.appendChild(button("Noted", "btn", function () { act(item.id, "done"); }));
       actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
@@ -541,6 +558,7 @@
         var add = button("Add as task", "btn", function () { taskFromItem(item, add); });
         actions.appendChild(add);
       }
+      if (startBtn) actions.appendChild(startBtn);
       actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
       actions.appendChild(laterControl(item, "btn subtle"));
       actions.appendChild(button("Not a task", "btn subtle", function () { act(item.id, "dismiss"); }));
@@ -553,11 +571,16 @@
         var make = button("Make a task", "btn subtle", function () { taskFromItem(item, make); });
         actions.appendChild(make);
       }
+      if (startBtn) actions.appendChild(startBtn);
       actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
     } else {
       actions.appendChild(button("Reopen", "btn", function () { act(item.id, "reopen"); }));
     }
     node.appendChild(actions);
+    if (canStart) {
+      var panel = startPanel("item", item.id, where);
+      if (panel) node.appendChild(panel);
+    }
     return node;
   }
 
@@ -626,7 +649,7 @@
     var list = $("list-suggested");
     list.textContent = "";
     $("n-suggested").textContent = items.length ? String(items.length) : "";
-    items.forEach(function (item) { list.appendChild(card(item, "commit")); });
+    items.forEach(function (item) { list.appendChild(card(item, "commit", "sug")); });
   }
 
   // ---------- Inbox: four sections ----------
@@ -664,7 +687,7 @@
     box.appendChild(head);
     var body = el("div", "tsec-body");
     if (!entries.length) body.appendChild(el("p", "empty", "Nothing here"));
-    entries.forEach(function (e) { body.appendChild(card(e.item, e.kind)); });
+    entries.forEach(function (e) { body.appendChild(card(e.item, e.kind, "inbox")); });
     box.appendChild(body);
     box.open = needles.length ? true : state.openInbox[id] !== false; // all start open
     head.addEventListener("click", function () { state.openInbox[id] = !box.open; });
@@ -724,7 +747,14 @@
     $(id).open = needles.length ? !!hasMatch : !!chosen;
   }
 
+  function showView(id) {
+    state.view = id;
+    render();
+    window.scrollTo(0, 0);
+  }
+
   function render() {
+    var typing = captureDraftFocus();
     needles = plain(state.query).split(/\s+/).filter(Boolean);
     var searching = needles.length > 0;
     var found = 0;
@@ -768,13 +798,15 @@
     var planRows = renderPlanning();
     var meetingCards = renderMeetings();
     var noteRows = renderNotes();
+    var todayRows = renderToday();
     var lists = state.view !== "meetings" && state.view !== "notes";
     $("box-later").hidden = !lists || inTasks || !groups.later.length;
     $("box-closed").hidden = !lists || inTasks || !groups.closed.length;
 
     // What is on screen in this view, for "N found" and for the sentence when nothing matches.
     found = groups.later.length + groups.closed.length;
-    if (state.view === "inbox") found += inboxRows;
+    if (state.view === "today") found += todayRows;
+    else if (state.view === "inbox") found += inboxRows;
     else if (state.view === "tasks") found += groups.commit.length + taskRows;
     else if (state.view === "planning") found += groups.decision.length + planRows;
     else if (state.view === "notes") found += noteRows;
@@ -791,6 +823,7 @@
     setFold("box-closed", groups.closed.length);
     setFold("box-tasks-done", $("list-tasks-done").children.length);
     if (state.view === "notes") fitNotes(); // measuring needs the view to be showing
+    fitDrafts();
 
     var box = $("search-empty");
     box.hidden = !(searching && !found);
@@ -805,12 +838,7 @@
     var views = $("views");
     views.textContent = "";
     VIEWS.forEach(function (v) {
-      var b = button(v.label + (counts[v.id] ? " " + counts[v.id] : ""), "view" + (state.view === v.id ? " on" : ""), function () {
-        state.view = v.id;
-        writePref("desk.view", v.id);
-        render();
-        window.scrollTo(0, 0);
-      });
+      var b = button(v.label + (counts[v.id] ? " " + counts[v.id] : ""), "view" + (state.view === v.id ? " on" : ""), function () { showView(v.id); });
       b.setAttribute("aria-pressed", state.view === v.id ? "true" : "false");
       views.appendChild(b);
     });
@@ -831,6 +859,7 @@
       b.setAttribute("aria-pressed", state.filter === s.id ? "true" : "false");
       nav.appendChild(b);
     });
+    restoreDraftFocus(typing);
   }
 
   // ---------- Meetings ----------
@@ -906,13 +935,12 @@
   function goToItem(item) {
     clearSearch(); // what you were looking for may not match the search
     state.view = viewFor(item);
-    writePref("desk.view", state.view);
     if (state.filter !== "all" && state.filter !== item.space) {
       state.filter = "all";
       writePref("desk.space", "all");
     }
     render();
-    var card = document.querySelector('[data-item="' + item.id + '"]');
+    var card = onPage('[data-item="' + item.id + '"]');
     if (!card) return;
     for (var p = card.parentElement; p; p = p.parentElement) {
       if (p.tagName === "DETAILS") {
@@ -926,9 +954,101 @@
     setTimeout(function () { card.classList.remove("flash"); }, 2200);
   }
 
+  // Scrolls to a card or row that was just drawn and lights it up for a moment.
+  function reveal(node) {
+    if (!node) return;
+    for (var p = node.parentElement; p; p = p.parentElement) {
+      if (p.tagName === "DETAILS") {
+        p.open = true;
+        if (p.id) state.folds[p.id] = true;
+      }
+    }
+    node.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    node.classList.add("flash");
+    setTimeout(function () { node.classList.remove("flash"); }, 2200);
+  }
+
+  // Opens Planning with this plan's Details open.
+  function goToPlan(plan) {
+    clearSearch();
+    if (state.filter !== "all" && state.filter !== plan.space) {
+      state.filter = "all";
+      writePref("desk.space", "all");
+    }
+    state.openPlans[plan.id] = true;
+    showView("planning");
+    reveal(onPage('[data-plan="' + plan.id + '"]'));
+  }
+
+  // Opens Meetings with this meeting's card in view.
+  function goToMeeting(meeting) {
+    clearSearch();
+    if (state.filter !== "all" && state.filter !== meeting.space) {
+      state.filter = "all";
+      writePref("desk.space", "all");
+    }
+    if (meetingEnded(meeting, Date.now())) state.folds.earlier = true; // a finished meeting sits in "Earlier today"
+    showView("meetings");
+    reveal(onPage('[data-meeting="' + meeting.id + '"]'));
+  }
+
+  function isLive(m, now) {
+    return !m.all_day && meetingDate(m).getTime() <= now && now < meetingEnd(m).getTime();
+  }
+
+  // "Now" while it runs, "In 25 min" in the last hour before it starts.
+  function timingFlag(m, now) {
+    if (m.all_day) return null;
+    if (isLive(m, now)) return el("span", "flag flag-3", "Now");
+    var mins = Math.ceil((meetingDate(m).getTime() - now) / 60000);
+    return mins > 0 && mins <= 60 ? el("span", "flag flag-2", "In " + mins + " min") : null;
+  }
+
+  // "With Ana, Ben and 3 more", or "" when nobody else is invited.
+  function withLine(m) {
+    var names = (Array.isArray(m.attendees) ? m.attendees : [])
+      .filter(function (a) { return a && !a.self; })
+      .map(personName).filter(Boolean);
+    if (!names.length) return "";
+    var shown = names.slice(0, 5).join(", ");
+    if (names.length > 5) shown += " +" + (names.length - 5) + " more";
+    return "With " + shown;
+  }
+
+  // The fold with the brief and what you owe; null when the meeting has neither.
+  function meetingFold(m) {
+    var owed = openOwed(m);
+    if (!m.brief && !owed.length) return null;
+    var fold = el("details", "message");
+    fold.appendChild(el("summary", null, (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "")));
+    var foldBox = foldIn(fold);
+    if (m.brief) foldBox.appendChild(el("p", "gist", m.brief));
+    if (owed.length) {
+      var box = el("div", "owed");
+      box.appendChild(el("p", "owed-head", "What you owe"));
+      owed.forEach(function (o) {
+        var row = el("button", "owed-row");
+        row.type = "button";
+        row.appendChild(el("span", "owed-title", o.title));
+        if (o.why) row.appendChild(el("span", "owed-why", o.why));
+        row.addEventListener("click", function () {
+          if (o.kind === "task") openTask(o.target); else goToItem(o.target);
+        });
+        box.appendChild(row);
+      });
+      foldBox.appendChild(box);
+    }
+    // The page redraws now and then; remember which folds you opened so they stay open.
+    fold.open = !!state.openMeetings[m.id];
+    fold.addEventListener("toggle", function () {
+      if (fold.open) state.openMeetings[m.id] = true; else delete state.openMeetings[m.id];
+    });
+    return fold;
+  }
+
   function meetingCard(m, now) {
     var start = meetingDate(m);
-    var live = !m.all_day && start.getTime() <= now && now < meetingEnd(m).getTime();
+    var live = isLive(m, now);
     var node = el("article", "card meeting" + (live ? " in-progress" : ""));
     node.setAttribute("data-meeting", m.id);
 
@@ -936,53 +1056,17 @@
     top.appendChild(el("span", "tag tag-" + m.space, spaceLabel(m.space)));
     top.appendChild(el("span", "when", m.all_day ? "All day" : clock(start) + " – " + clock(meetingEnd(m))));
     if (m.recurring_event_id) top.appendChild(el("span", "kind", "Repeats"));
-    if (live) {
-      top.appendChild(el("span", "flag flag-3", "Now"));
-    } else if (!m.all_day) {
-      var mins = Math.ceil((start.getTime() - now) / 60000);
-      if (mins > 0 && mins <= 60) top.appendChild(el("span", "flag flag-2", "In " + mins + " min"));
-    }
+    var flag = timingFlag(m, now);
+    if (flag) top.appendChild(flag);
     if (RESPONSES[m.my_response]) top.appendChild(el("span", "flag flag-2", RESPONSES[m.my_response]));
     node.appendChild(top);
 
     node.appendChild(el("h3", "title", m.title || "Meeting"));
 
-    var names = (Array.isArray(m.attendees) ? m.attendees : [])
-      .filter(function (a) { return a && !a.self; })
-      .map(personName).filter(Boolean);
-    if (names.length) {
-      var shown = names.slice(0, 5).join(", ");
-      if (names.length > 5) shown += " +" + (names.length - 5) + " more";
-      node.appendChild(el("p", "reason", "With " + shown));
-    }
-    var owed = openOwed(m);
-    if (m.brief || owed.length) {
-      var fold = el("details", "message");
-      fold.appendChild(el("summary", null, (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "")));
-      var foldBox = foldIn(fold);
-      if (m.brief) foldBox.appendChild(el("p", "gist", m.brief));
-      if (owed.length) {
-        var box = el("div", "owed");
-        box.appendChild(el("p", "owed-head", "What you owe"));
-        owed.forEach(function (o) {
-          var row = el("button", "owed-row");
-          row.type = "button";
-          row.appendChild(el("span", "owed-title", o.title));
-          if (o.why) row.appendChild(el("span", "owed-why", o.why));
-          row.addEventListener("click", function () {
-            if (o.kind === "task") openTask(o.target); else goToItem(o.target);
-          });
-          box.appendChild(row);
-        });
-        foldBox.appendChild(box);
-      }
-      // The page redraws now and then; remember which folds you opened so they stay open.
-      fold.open = !!state.openMeetings[m.id];
-      fold.addEventListener("toggle", function () {
-        if (fold.open) state.openMeetings[m.id] = true; else delete state.openMeetings[m.id];
-      });
-      node.appendChild(fold);
-    }
+    var who = withLine(m);
+    if (who) node.appendChild(el("p", "reason", who));
+    var fold = meetingFold(m);
+    if (fold) node.appendChild(fold);
 
     var join = httpsLink(m.join_url);
     var cal = httpsLink(m.event_url);
@@ -1265,10 +1349,7 @@
     }));
     actions.appendChild(button("See tasks", "btn", function () {
       state.project = p.id;
-      state.view = "tasks";
-      writePref("desk.view", "tasks");
-      render();
-      window.scrollTo(0, 0);
+      showView("tasks");
     }));
     var again = button(state.reviewing[p.id] ? "Reviewing…" : "Review now", "btn", function () { reviewPlan(p); });
     again.disabled = !!state.reviewing[p.id];
@@ -1502,7 +1583,7 @@
   }
 
   // What you see when you open a task in the list: everything it holds, read-only.
-  function taskDetails(task, row) {
+  function taskDetails(task, row, where) {
     var open = task.status === "open";
     var box = el("div", "fold-body task-open");
     var any = false;
@@ -1551,6 +1632,8 @@
     actions.appendChild(button("Edit", "btn", function () { openTask(task); }));
     if (open) {
       actions.appendChild(button("Done", "btn", function () { finishTask(task, row); }));
+      var begin = startControl("task", task.id, "btn");
+      if (begin) actions.appendChild(begin);
       actions.appendChild(button("Drop", "btn subtle", function () {
         saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() });
         toast("Task dropped.", function () { saveTask(task.id, { status: "open", done_at: null }); });
@@ -1571,7 +1654,7 @@
     return box;
   }
 
-  function taskRow(task) {
+  function taskRow(task, where) {
     var isOpen = !!state.openTasks[task.id];
     var row = el("div", "trow" + (task.status === "done" ? " is-done" : "") + (isOpen ? " is-open" : ""));
     row.setAttribute("data-task", task.id);
@@ -1595,13 +1678,22 @@
     if (late) main.appendChild(el("p", "trow-late", late));
     if (!isOpen && task.context) main.appendChild(el("p", "trow-why", why(task)));
     row.appendChild(main);
-    if (isOpen) row.appendChild(taskDetails(task, row));
+    if (task.status === "open") {
+      // On a wide screen a small quiet button sits at the right end of the row (hidden by the stylesheet on a phone).
+      var rowStart = startControl("task", task.id, "quiet row-start");
+      if (rowStart) row.appendChild(rowStart);
+    }
+    if (isOpen) row.appendChild(taskDetails(task, row, where));
+    if (task.status === "open") {
+      var startBox = startPanel("task", task.id, where);
+      if (startBox) row.appendChild(startBox);
+    }
 
     // Tapping the row opens or closes it in place. Controls inside it do their own thing.
     row.addEventListener("click", function (event) {
       if (event.target.closest("input, a, select, .fold-body, button:not(.task-title)")) return;
       if (state.openTasks[task.id]) delete state.openTasks[task.id]; else state.openTasks[task.id] = true;
-      var fresh = taskRow(task);
+      var fresh = taskRow(task, where);
       row.replaceWith(fresh);
       if (event.target.classList.contains("task-title")) fresh.querySelector(".task-title").focus({ preventScroll: true });
     });
@@ -1612,7 +1704,6 @@
   function goToTask(task) {
     clearSearch();
     state.view = "tasks";
-    writePref("desk.view", "tasks");
     if (state.filter !== "all" && state.filter !== task.space) {
       state.filter = "all";
       writePref("desk.space", "all");
@@ -1621,7 +1712,7 @@
     state.openSections[horizonOf(task)] = true;
     state.openTasks[task.id] = true;
     render();
-    var row = document.querySelector('[data-task="' + task.id + '"]');
+    var row = onPage('[data-task="' + task.id + '"]');
     if (!row) return;
     row.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
     row.classList.add("flash");
@@ -1645,7 +1736,7 @@
     box.appendChild(head);
     var body = el("div", "tsec-body");
     if (!rows.length) body.appendChild(el("p", "empty", "Nothing here"));
-    rows.forEach(function (t) { body.appendChild(taskRow(t)); });
+    rows.forEach(function (t) { body.appendChild(taskRow(t, "tasks")); });
     box.appendChild(body);
     if (collapsible) {
       box.open = needles.length ? true : !!state.openSections[id];
@@ -1721,7 +1812,7 @@
     var done = shown.filter(function (t) { return t.status === "done"; });
     var doneList = $("list-tasks-done");
     doneList.textContent = "";
-    done.forEach(function (t) { doneList.appendChild(taskRow(t)); });
+    done.forEach(function (t) { doneList.appendChild(taskRow(t, "done")); });
     $("n-tasks-done").textContent = done.length ? String(done.length) : "";
     $("box-tasks-done").hidden = !done.length;
     return open.length + done.length;
@@ -1731,7 +1822,7 @@
   // because a repeating task has already produced its next occurrence).
   async function finishTask(task, row) {
     var saving = sb.from("tasks").update({ status: "done", done_at: new Date().toISOString() }).eq("id", task.id);
-    await leave(row || document.querySelector('[data-task="' + task.id + '"]'), "✓ Done", "ok");
+    await leave(row || onPage('[data-task="' + task.id + '"]'), "✓ Done", "ok");
     task.status = "done";
     task.done_at = new Date().toISOString();
     render();
@@ -1923,7 +2014,8 @@
     return task;
   }
 
-  async function taskFromItem(item, trigger) {
+  // `startSteps` are the steps of a Start; they are added to the ones the suggestion brings.
+  async function taskFromItem(item, trigger, startSteps) {
     var triggerLabel = trigger ? trigger.textContent : "";
     if (trigger) { trigger.disabled = true; trigger.textContent = "Working it out…"; }
     var task = blankTask(item.space, item.title);
@@ -1942,7 +2034,9 @@
     var s = await suggest({ item_id: item.id });
     if (s) s.space = item.space;
     var basis = !fromNotes(item) ? "the message" : sourcesOf(item).length > 1 ? "what the notes and Granola say" : "your meeting notes";
-    showDialog(withSuggestion(task, s), s ? "Suggested from " + basis + ". Change anything, then save." : "Could not get a suggestion, so this is filled in from the item. Change anything, then save.");
+    withSuggestion(task, s);
+    if (startSteps && startSteps.length) task.steps = mergeSteps(task.steps, startSteps);
+    showDialog(task, s ? "Suggested from " + basis + ". Change anything, then save." : "Could not get a suggestion, so this is filled in from the item. Change anything, then save.");
     if (trigger) { trigger.disabled = false; trigger.textContent = triggerLabel; }
   }
 
@@ -2067,25 +2161,30 @@
     box.style.overflowY = want > most ? "auto" : "hidden";
   }
 
-  var noteFormFilter = null; // the filter the form was last set up for
+  var noteFormFilter = null; // the filter the forms were last set up for
   var notePlanKey = "";
 
-  // The writing box at the top: organisation preset from the filter, plans of that organisation.
+  function fillSpaceChoices(space) {
+    if (space.options.length) return;
+    [["", "Choose organisation"], ["metaculus", "Metaculus"], ["cea", "CEA"], ["personal", "Personal"]].forEach(function (x) {
+      var o = el("option", null, x[1]);
+      o.value = x[0];
+      space.appendChild(o);
+    });
+    space.options[0].disabled = true;
+  }
+
+  // The writing boxes (Notes and the quick note on Today): organisation preset from the filter, plans of that organisation.
   function syncNoteForm() {
     var space = $("note-space");
-    if (!space.options.length) {
-      [["", "Choose organisation"], ["metaculus", "Metaculus"], ["cea", "CEA"], ["personal", "Personal"]].forEach(function (x) {
-        var o = el("option", null, x[1]);
-        o.value = x[0];
-        space.appendChild(o);
-      });
-      space.options[0].disabled = true;
-    }
+    var quick = $("cvnote-space");
+    fillSpaceChoices(space);
+    fillSpaceChoices(quick);
     if (noteFormFilter !== state.filter) {
       noteFormFilter = state.filter;
-      space.value = state.filter !== "all" ? state.filter : (state.noteSpace || "");
+      space.value = quick.value = state.filter !== "all" ? state.filter : (state.noteSpace || "");
     }
-    space.options[0].hidden = state.filter !== "all";
+    space.options[0].hidden = quick.options[0].hidden = state.filter !== "all";
     var plans = $("note-plan");
     var key = space.value + "|" + state.projects.filter(function (p) { return p.space === space.value; })
       .map(function (p) { return p.id + ":" + p.name + ":" + !!p.is_plan; }).join("|");
@@ -2095,20 +2194,22 @@
     }
   }
 
-  async function saveNote() {
-    var problem = $("note-error");
+  // Saves the note in the Notes box, or in the quick note on Today when `quick` is true.
+  async function saveNote(quick) {
+    var pre = quick ? "cvnote-" : "note-";
+    var problem = $(pre + "error");
     problem.hidden = true;
-    var box = $("note-body");
+    var box = $(pre + "body");
     var body = box.value.trim();
     if (!body) { box.focus(); return; }
-    var space = $("note-space").value;
+    var space = $(pre + "space").value;
     if (!space) {
       problem.textContent = "Choose an organisation first.";
       problem.hidden = false;
-      $("note-space").focus();
+      $(pre + "space").focus();
       return;
     }
-    var projectIdValue = planChoice($("note-plan"));
+    var projectIdValue = quick ? null : planChoice($("note-plan"));
     state.noteSpace = space;
     var stamp = new Date().toISOString();
     // Shown at once; if the save fails you are told and the words go back into the box.
@@ -2116,7 +2217,7 @@
     state.notes.unshift(temp);
     box.value = "";
     grow(box);
-    $("note-plan").value = "";
+    if (!quick) $("note-plan").value = "";
     render();
     var res = await sb.from("notes").insert({ space: space, project_id: projectIdValue, body: body, pinned: false }).select("id, space, project_id, body, pinned, created_at, updated_at").single();
     var at = state.notes.indexOf(temp);
@@ -2127,6 +2228,12 @@
       if (!box.value) { box.value = body; grow(box); }
     } else if (at >= 0) {
       state.notes[at] = res.data;
+    }
+    if (quick && !failed) {
+      var ok = $("cvnote-ok");
+      ok.hidden = false;
+      clearTimeout(state.noteOkTimer);
+      state.noteOkTimer = setTimeout(function () { ok.hidden = true; }, 4000);
     }
     render();
     await load();
@@ -2282,10 +2389,572 @@
   function showNotesFor(p) {
     state.query = p.name;
     $("search").value = p.name;
-    state.view = "notes";
-    writePref("desk.view", "notes");
+    showView("notes");
+  }
+
+  // ---------- Today ----------
+
+  var KIND_TAGS = { decision: "Decide", owed: "You owe", heads_up: "Heads-up" };
+  var REVIEW_FAIL = "The review did not finish. Try again in a minute.";
+  var START_FAIL = "Start did not finish. Try again in a minute.";
+
+  function inFilter(row) {
+    return state.filter === "all" || row.space === state.filter;
+  }
+
+  // Empties one block of Today and writes its heading; returns the heading row and the body.
+  function coverBlock(id, name) {
+    var box = $(id);
+    box.textContent = "";
+    var head = el("div", "tsec-head");
+    head.appendChild(el("h2", "tsec-name", name));
+    box.appendChild(head);
+    var body = el("div", "tsec-body");
+    box.appendChild(body);
+    return { box: box, head: head, body: body };
+  }
+
+  function coverFoot(box, label, view) {
+    var foot = el("div", "cv-foot");
+    foot.appendChild(button(label, "quiet", function () { showView(view); }));
+    box.appendChild(foot);
+  }
+
+  // The meetings that are running or still to come within 7 days, soonest first.
+  function upcomingMeetings(now) {
+    var limit = now + 7 * DAY;
+    return shownMeetings().filter(function (m) {
+      return !m.all_day && meetingEnd(m).getTime() > now && meetingDate(m).getTime() <= limit;
+    }).sort(function (a, b) { return meetingDate(a).getTime() - meetingDate(b).getTime(); });
+  }
+
+  // "Today 14:00 - 14:30", "Tomorrow 09:30", "Fri 14 Nov 10:00".
+  function whenLabel(m, now) {
+    var start = meetingDate(m);
+    var end = meetingEnd(m);
+    var days = Math.round((dayStart(start) - dayStart(new Date(now))) / DAY);
+    if (days <= 0) return "Today " + clock(start) + (end.getTime() > start.getTime() ? " - " + clock(end) : "");
+    if (days === 1) return "Tomorrow " + clock(start);
+    return start.toLocaleDateString([], { weekday: "short" }) + " " + shortDate(start) + " " + clock(start);
+  }
+
+  function renderNextUp(now) {
+    var blk = coverBlock("cv-next", "Next up");
+    var body = blk.body;
+    body.className = "tsec-body cv-pad";
+    var list = upcomingMeetings(now);
+    if (!list.length) {
+      body.appendChild(el("p", "empty", "You have no meetings in the next 7 days."));
+      return;
+    }
+    var m = list[0];
+    var top = el("div", "cv-top");
+    top.appendChild(el("span", "tag tag-" + m.space, spaceLabel(m.space)));
+    var flag = timingFlag(m, now);
+    if (flag) top.appendChild(flag);
+    if (RESPONSES[m.my_response]) top.appendChild(el("span", "flag flag-2", RESPONSES[m.my_response]));
+    body.appendChild(top);
+    body.appendChild(el("h3", "cv-title", m.title || "Meeting"));
+    body.appendChild(el("p", "cv-when", whenLabel(m, now)));
+    var who = withLine(m);
+    if (who) body.appendChild(el("p", "reason", who));
+    var join = httpsLink(m.join_url);
+    var cal = httpsLink(m.event_url);
+    if (join || cal) {
+      var actions = el("div", "actions");
+      if (join) actions.appendChild(linkTo(join, "Join", "btn join big"));
+      if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
+      body.appendChild(actions);
+    }
+    var fold = meetingFold(m);
+    if (fold) body.appendChild(fold);
+
+    var today = dayStart(new Date(now));
+    var later = list.slice(1).filter(function (x) { return dayStart(meetingDate(x)) === today; });
+    if (later.length) {
+      body.appendChild(el("p", "owed-head cv-later-head", "Later today"));
+      var ul = el("ul", "cv-later");
+      later.forEach(function (x) {
+        var li = el("li");
+        li.setAttribute("data-later-meeting", x.id);
+        li.appendChild(el("span", "cv-t", clock(meetingDate(x))));
+        li.appendChild(el("span", "cv-n", x.title || "Meeting"));
+        var j = httpsLink(x.join_url);
+        if (j) li.appendChild(linkTo(j, "Join", "cv-join"));
+        ul.appendChild(li);
+      });
+      body.appendChild(ul);
+    }
+  }
+
+  // Open tasks that are in the Today section, due today or overdue; overdue first, oldest date first.
+  function coverTaskList() {
+    var today = localDay();
+    var open = state.tasks.filter(function (t) {
+      return t.status === "open" && inFilter(t) && (horizonOf(t) === "today" || (t.due_on && t.due_on <= today));
+    });
+    var isLate = function (t) { return !!t.due_on && t.due_on < today; };
+    var overdue = open.filter(isLate).sort(function (a, b) {
+      return a.due_on < b.due_on ? -1 : a.due_on > b.due_on ? 1 : (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0);
+    });
+    var rest = open.filter(function (t) { return !isLate(t); }).sort(taskOrder);
+    return { all: overdue.concat(rest), late: overdue.length };
+  }
+
+  function renderCoverTasks() {
+    var blk = coverBlock("cv-tasks", "Tasks today");
+    var found = coverTaskList();
+    if (found.late) blk.head.appendChild(el("span", "cv-late", found.late + " late"));
+    blk.head.appendChild(el("span", "count", found.all.length + " open"));
+    var rows = needles.length ? found.all.filter(function (t) { return hit(taskParts(t)); }) : found.all;
+    rows.slice(0, 6).forEach(function (t) { blk.body.appendChild(taskRow(t, "today")); });
+    if (!found.all.length && !needles.length) {
+      blk.body.appendChild(el("p", "empty", "Nothing is due today and nothing is late."));
+    }
+    coverFoot(blk.box, "All tasks", "tasks");
+    return Math.min(rows.length, 6);
+  }
+
+  // Up to 3 open items from key people, newest first; filled up with other items that wait on you.
+  function coverInboxList() {
+    var live = state.items.filter(function (i) {
+      var b = bucket(i);
+      return inFilter(i) && (b === "waiting" || b === "look") && hit(itemParts(i));
+    });
+    var out = live.filter(fromKeyPerson).sort(newest).slice(0, 3);
+    if (out.length < 3) {
+      live.filter(function (i) { return bucket(i) === "waiting" && !fromKeyPerson(i); }).sort(newest).slice(0, 3 - out.length)
+        .forEach(function (i) { out.push(i); });
+    }
+    return out;
+  }
+
+  function renderCoverInbox() {
+    var blk = coverBlock("cv-inbox", "Inbox, most important");
+    var list = coverInboxList();
+    list.forEach(function (i) { blk.body.appendChild(card(i, bucket(i), "today")); });
+    if (!list.length && !needles.length) blk.body.appendChild(el("p", "empty", "Nothing in your inbox is waiting on you."));
+    coverFoot(blk.box, "All inbox", "inbox");
+    return list.length;
+  }
+
+  function coverFor(space) {
+    return state.covers.filter(function (c) { return c.space === space; })[0] || null;
+  }
+
+  // Keeps a review that a function just returned until a load has it too.
+  function mergeCovers(fetched) {
+    var out = fetched.slice();
+    Object.keys(state.fresh.covers).forEach(function (space) {
+      var f = state.fresh.covers[space];
+      var at = out.map(function (c) { return c.space; }).indexOf(space);
+      var caughtUp = at >= 0 && (Date.parse(out[at].written_at) || 0) >= (Date.parse(f.row.written_at) || 0);
+      if (caughtUp || Date.now() - f.at > 30000) { delete state.fresh.covers[space]; return; }
+      if (at >= 0) out[at] = f.row; else out.push(f.row);
+    });
+    return out;
+  }
+
+  // Where a point of the review leads; null when the thing is no longer open or not loaded.
+  function pointTarget(ref) {
+    if (!ref || !ref.kind || ref.id === undefined || ref.id === null) return null;
+    var same = function (x) { return String(x.id) === String(ref.id); };
+    if (ref.kind === "item") {
+      var item = state.items.filter(same)[0];
+      var b = item ? bucket(item) : "closed";
+      return item && b !== "later" && b !== "closed" ? function () { goToItem(item); } : null;
+    }
+    if (ref.kind === "task") {
+      var task = state.tasks.filter(same)[0];
+      return task && task.status === "open" ? function () { goToTask(task); } : null;
+    }
+    if (ref.kind === "plan") {
+      var plan = state.projects.filter(same)[0];
+      return plan && plan.is_plan ? function () { goToPlan(plan); } : null;
+    }
+    if (ref.kind === "meeting") {
+      var meeting = state.meetings.filter(same)[0];
+      if (!meeting || meeting.status === "cancelled" || meeting.my_response === "declined") return null;
+      var offset = Math.round((dayStart(meetingDate(meeting)) - dayStart(new Date())) / DAY);
+      return offset >= 0 && offset <= 7 ? function () { goToMeeting(meeting); } : null;
+    }
+    return null;
+  }
+
+  function renderCoverReview() {
+    var blk = coverBlock("cv-review", "How things stand");
+    blk.body.className = "tsec-body cv-pad";
+    var spaces = state.filter === "all"
+      ? ["metaculus", "cea", "personal"].filter(function (sp) { return sp !== "personal" || coverFor(sp); })
+      : [state.filter];
+    var shown = 0;
+    spaces.forEach(function (space) {
+      var row = coverFor(space);
+      var points = row && Array.isArray(row.points) ? row.points.filter(function (p) { return p && p.text; }) : [];
+      var text = row && row.review ? String(row.review) : "";
+      var showText = !needles.length || hit([text]);
+      if (needles.length) {
+        points = points.filter(function (p) { return hit([p.text, KIND_TAGS[p.kind]]); });
+        if (!points.length && !(text && showText)) return;
+      }
+      var org = el("div", "cv-org");
+      org.setAttribute("data-cover", space);
+      var top = el("div", "cv-top");
+      top.appendChild(el("span", "tag tag-" + space, spaceLabel(space)));
+      org.appendChild(top);
+      if (!row) {
+        org.appendChild(el("p", "empty", "No review yet"));
+      } else {
+        if (text && showText) { org.appendChild(el("p", "gist cv-review-text", text)); shown++; }
+        if (points.length) {
+          var ul = el("ul", "cv-points");
+          points.forEach(function (p) {
+            var li = el("li", "cv-point");
+            li.appendChild(el("span", "kind cv-kind-" + (KIND_TAGS[p.kind] ? p.kind : "heads_up"), KIND_TAGS[p.kind] || "Heads-up"));
+            var go = pointTarget(p.ref);
+            if (go) li.appendChild(button(String(p.text), "ref cv-ref", go));
+            else li.appendChild(el("span", "cv-plain", String(p.text)));
+            ul.appendChild(li);
+            shown++;
+          });
+          org.appendChild(ul);
+        }
+      }
+      if (!needles.length) {
+        var foot = el("div", "cv-written");
+        if (row && row.written_at) foot.appendChild(el("span", null, "Written " + noteDate(row.written_at)));
+        var busy = !!state.covering[space];
+        var again = button(busy ? "Writing..." : "Refresh", "btn small", function () { refreshCover(space); });
+        again.disabled = busy;
+        foot.appendChild(again);
+        org.appendChild(foot);
+      }
+      blk.body.appendChild(org);
+    });
+    return shown;
+  }
+
+  // Asks Claude to write the review again. Takes up to a minute; the rest of the page stays usable.
+  async function refreshCover(space) {
+    if (state.covering[space]) return;
+    state.covering[space] = true;
     render();
-    window.scrollTo(0, 0);
+    var ok = false;
+    try {
+      var res = await sb.functions.invoke("cover-review", { body: { space: space } });
+      var c = res && res.data && res.data.cover;
+      if (!res.error && res.data && res.data.ok !== false && c && typeof c.review === "string") {
+        var row = { space: c.space || space, review: c.review, points: Array.isArray(c.points) ? c.points : [], written_at: c.written_at || new Date().toISOString() };
+        state.covers = state.covers.filter(function (x) { return x.space !== row.space; }).concat([row]);
+        state.fresh.covers[row.space] = { row: row, at: Date.now() };
+        ok = true;
+      }
+    } catch (_) { /* told below */ }
+    delete state.covering[space];
+    notice(ok ? "" : REVIEW_FAIL);
+    render();
+  }
+
+  function renderToday() {
+    var now = Date.now();
+    renderNextUp(now);
+    return renderCoverTasks() + renderCoverInbox() + renderCoverReview();
+  }
+
+  // ---------- Start: steps (and a draft reply) for an item or a task ----------
+
+  var startBoxes = {}; // the draft boxes, kept between redraws so typing is never lost
+
+  function stepKey(text) {
+    return String(text === undefined || text === null ? "" : text).trim().toLowerCase();
+  }
+
+  // `base` steps followed by those of `extra` that are not already there (compared lower-cased and trimmed).
+  function mergeSteps(base, extra) {
+    var have = {};
+    var out = [];
+    (base || []).forEach(function (x) {
+      if (!x) return;
+      have[stepKey(x.text)] = true;
+      out.push({ text: String(x.text || ""), done: !!x.done });
+    });
+    (extra || []).forEach(function (x) {
+      var k = x ? stepKey(x.text) : "";
+      if (!k || have[k]) return;
+      have[k] = true;
+      out.push({ text: String(x.text).trim(), done: !!x.done });
+    });
+    return out;
+  }
+
+  function startKey(kind, id) { return kind + ":" + id; }
+
+  function startFor(kind, id) {
+    for (var i = 0; i < state.starts.length; i++) {
+      var s = state.starts[i];
+      if (String(kind === "item" ? s.item_id : s.task_id) === String(id)) return s;
+    }
+    return null;
+  }
+
+  // Keeps a start that the function just returned until a load has it too; edits on their way win over a load.
+  function mergeStarts(fetched) {
+    var local = {};
+    state.starts.forEach(function (r) { local[r.id] = r; });
+    var out = fetched.map(function (r) { return state.startHold[r.id] && local[r.id] ? local[r.id] : r; });
+    Object.keys(state.fresh.starts).forEach(function (id) {
+      var f = state.fresh.starts[id];
+      var there = out.some(function (r) { return String(r.id) === id; });
+      if (there || Date.now() - f.at > 30000) { delete state.fresh.starts[id]; return; }
+      out.push(f.row);
+    });
+    return out;
+  }
+
+  function storeStart(row) {
+    state.starts = state.starts.filter(function (x) { return x.id !== row.id && !(row.item_id && x.item_id === row.item_id) && !(row.task_id && x.task_id === row.task_id); }).concat([row]);
+    state.fresh.starts[row.id] = { row: row, at: Date.now() };
+    // A new draft replaces whatever was typed in the boxes.
+    var key = startKey(row.item_id ? "item" : "task", row.item_id || row.task_id);
+    Object.keys(startBoxes).forEach(function (k) {
+      if (k.indexOf(key + "|") !== 0) return;
+      var ta = startBoxes[k];
+      clearTimeout(ta._t);
+      ta._dirty = false;
+      ta._startId = row.id;
+      ta.value = row.draft || "";
+    });
+  }
+
+  // The Start button: "Start", "Preparing..." while it runs, "Show start" when one exists. Nothing while its panel is open.
+  function startControl(kind, id, className) {
+    var key = startKey(kind, id);
+    var existing = startFor(kind, id);
+    var busy = !!state.starting[key];
+    if (existing && state.startOpen[key]) return null;
+    var b = button(busy ? "Preparing..." : existing ? "Show start" : "Start", className, function () {
+      if (existing) { state.startOpen[key] = true; render(); } else runStart(kind, id, false);
+    });
+    b.setAttribute("data-start", key);
+    b.disabled = busy;
+    return b;
+  }
+
+  // Asks the start-item function; it can take up to a minute. It prepares text only; nothing is sent.
+  async function runStart(kind, id, redo) {
+    var key = startKey(kind, id);
+    if (state.starting[key]) return;
+    state.starting[key] = true;
+    delete state.startAsk[key];
+    render();
+    var body = kind === "item" ? { item_id: id } : { task_id: id };
+    if (redo) body.redo = true;
+    var ok = false;
+    try {
+      var res = await sb.functions.invoke("start-item", { body: body });
+      if (!res.error && res.data && res.data.ok !== false && res.data.start) {
+        storeStart(res.data.start);
+        state.startOpen[key] = true;
+        ok = true;
+      }
+    } catch (_) { /* told below */ }
+    delete state.starting[key];
+    notice(ok ? "" : START_FAIL);
+    render();
+  }
+
+  // Saves changes to a start. The page shows them first; a failure is told and the real data comes back.
+  async function saveStartFields(id, changes, quiet) {
+    var row = state.starts.filter(function (r) { return r.id === id; })[0];
+    if (row) {
+      Object.keys(changes).forEach(function (k) { row[k] = changes[k]; });
+      if (!quiet) render();
+    }
+    state.startHold[id] = (state.startHold[id] || 0) + 1;
+    var res = await sb.from("starts").update(changes).eq("id", id);
+    state.startHold[id]--;
+    if (!state.startHold[id]) delete state.startHold[id];
+    if (res.error) {
+      notice("That did not save: " + res.error.message);
+      await load();
+    }
+  }
+
+  function hasBrackets(text) {
+    return /\[[^\]\n]+\]/.test(text);
+  }
+
+  // The draft box of a start in one place on the page. It is created once and moved into each new panel.
+  function draftBox(key, where, row) {
+    var id = key + "|" + where;
+    var ta = startBoxes[id];
+    if (!ta) {
+      ta = document.createElement("textarea");
+      ta.className = "start-draft";
+      ta.rows = 1;
+      ta.maxLength = 20000;
+      ta.spellcheck = true;
+      ta.setAttribute("aria-label", "Draft reply");
+      ta._rev = 0;
+      ta._dirty = false;
+      ta.addEventListener("input", function () {
+        ta._dirty = true;
+        ta._rev++;
+        fitDraft(ta);
+        if (ta._hint) ta._hint.hidden = !hasBrackets(ta.value);
+        clearTimeout(ta._t);
+        ta._t = setTimeout(function () { flushDraft(ta); }, 1000);
+      });
+      ta.addEventListener("blur", function () { flushDraft(ta); });
+      ta.value = row.draft || "";
+      startBoxes[id] = ta;
+    } else if (!ta._dirty && document.activeElement !== ta && ta.value !== (row.draft || "")) {
+      ta.value = row.draft || "";
+    }
+    ta._startId = row.id;
+    return ta;
+  }
+
+  // Saves what is in the draft box, if it changed.
+  function flushDraft(ta) {
+    clearTimeout(ta._t);
+    if (!ta._dirty) return;
+    var rev = ta._rev;
+    saveStartFields(ta._startId, { draft: ta.value }, true).then(function () {
+      if (ta._rev === rev) ta._dirty = false;
+    });
+  }
+
+  // Makes a box as tall as its text; only while it is on screen, where it can be measured.
+  function fitDraft(ta) {
+    if (!ta.offsetParent) return;
+    ta.style.height = "auto";
+    var cs = getComputedStyle(ta);
+    var edge = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    ta.style.height = (ta.scrollHeight + edge) + "px";
+  }
+
+  function fitDrafts() {
+    document.querySelectorAll("textarea.start-draft").forEach(fitDraft);
+  }
+
+  // A redraw takes the draft box out of the page and puts it back; these keep the caret where it was.
+  function captureDraftFocus() {
+    var a = document.activeElement;
+    if (!a || !a.classList || !a.classList.contains("start-draft")) return null;
+    return { box: a, from: a.selectionStart, to: a.selectionEnd, dir: a.selectionDirection, top: a.scrollTop };
+  }
+
+  function restoreDraftFocus(saved) {
+    if (!saved || !saved.box.isConnected || !saved.box.offsetParent) return;
+    saved.box.focus({ preventScroll: true });
+    try { saved.box.setSelectionRange(saved.from, saved.to, saved.dir || "none"); } catch (_) { /* not selectable */ }
+    saved.box.scrollTop = saved.top;
+  }
+
+  async function copyDraft(key, ta) {
+    var done = false;
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(ta.value);
+      done = true;
+    } catch (_) {
+      // No clipboard here: select the words so you can copy them yourself.
+      ta.focus();
+      ta.select();
+      try { done = document.execCommand("copy"); } catch (__) { done = false; }
+    }
+    state.copied[key] = done ? "done" : "select";
+    render();
+    setTimeout(function () { delete state.copied[key]; render(); }, 1800);
+  }
+
+  function startPanel(kind, id, where) {
+    var key = startKey(kind, id);
+    var row = startFor(kind, id);
+    if (!row || !state.startOpen[key]) return null;
+    var busy = !!state.starting[key];
+    var panel = el("div", "fold-body start-panel");
+    panel.setAttribute("data-start-panel", key);
+    if (row.summary) panel.appendChild(el("p", "gist pre", row.summary));
+
+    var steps = (Array.isArray(row.steps) ? row.steps : []).filter(function (x) { return x && x.text; });
+    if (steps.length) {
+      panel.appendChild(label("Steps"));
+      steps.forEach(function (step, i) {
+        var line = el("label", "tstep" + (step.done ? " is-done" : ""));
+        var tick = document.createElement("input");
+        tick.type = "checkbox";
+        tick.checked = !!step.done;
+        tick.addEventListener("change", function () {
+          var next = steps.map(function (x, j) { return { text: String(x.text), done: j === i ? tick.checked : !!x.done }; });
+          saveStartFields(row.id, { steps: next });
+        });
+        line.appendChild(tick);
+        line.appendChild(el("span", null, step.text));
+        panel.appendChild(line);
+      });
+    }
+
+    var source = null; // the message this start is about, for the link to reply
+    var actions = el("div", "actions");
+    var task = null;
+    if (kind === "task") {
+      task = state.tasks.filter(function (t) { return String(t.id) === String(id); })[0] || null;
+      if (task && task.source_item_id) source = state.items.filter(function (i) { return i.id === task.source_item_id; })[0] || null;
+    } else {
+      source = state.items.filter(function (i) { return String(i.id) === String(id); })[0] || null;
+      task = source ? taskFor(source) : null;
+    }
+    if (steps.length && task) {
+      var merged = mergeSteps(task.steps, steps);
+      var fresh = merged.length > (Array.isArray(task.steps) ? task.steps.length : 0);
+      var addSteps = button(fresh ? "Add these steps to the task" : "Added", "btn", function () { saveTask(task.id, { steps: merged }); });
+      addSteps.disabled = !fresh;
+      actions.appendChild(addSteps);
+    } else if (steps.length && source) {
+      var make = button("Make a task with these steps", "btn", function () { taskFromItem(source, make, steps); });
+      actions.appendChild(make);
+    }
+    if (actions.children.length) panel.appendChild(actions);
+
+    if (row.draft !== null && row.draft !== undefined) {
+      var head = label("Draft reply");
+      if (row.draft_kind === "slack" || row.draft_kind === "email") {
+        head.appendChild(document.createTextNode(" "));
+        head.appendChild(el("span", "kind", row.draft_kind === "slack" ? "Slack" : "Email"));
+      }
+      panel.appendChild(head);
+      var ta = draftBox(key, where, row);
+      panel.appendChild(ta);
+      var tools = el("div", "actions");
+      var mark = state.copied[key];
+      tools.appendChild(button(mark === "done" ? "Copied" : mark === "select" ? "Selected, now copy it" : "Copy", "btn", function () { copyDraft(key, ta); }));
+      var link = source ? sourceLink(source) : null;
+      if (link) tools.appendChild(linkTo(link.href, link.label, "btn"));
+      panel.appendChild(tools);
+      panel.appendChild(el("p", "fine", "Nothing is sent from here. Copy it, or open the message to reply."));
+      var hint = el("p", "fine", "Fill in the parts in [brackets] before you use it.");
+      hint.hidden = !hasBrackets(ta.value);
+      ta._hint = hint;
+      panel.appendChild(hint);
+    }
+
+    var foot = el("div", "actions");
+    if (busy) {
+      var wait = button("Preparing...", "btn subtle", function () {});
+      wait.disabled = true;
+      foot.appendChild(wait);
+    } else if (state.startAsk[key]) {
+      foot.appendChild(el("span", "note-ask", row.draft ? "Write it again? Your edits to the draft will be replaced." : "Write it again? Your ticks on the steps will be replaced."));
+      foot.appendChild(button("Write again", "btn", function () { runStart(kind, id, true); }));
+      foot.appendChild(button("Keep", "btn", function () { delete state.startAsk[key]; render(); }));
+    } else {
+      foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
+      foot.appendChild(button("Hide", "btn subtle", function () { delete state.startOpen[key]; delete state.startAsk[key]; render(); }));
+    }
+    panel.appendChild(foot);
+    return panel;
   }
 
   // ---------- Data ----------
@@ -2328,6 +2997,8 @@
           .select("id, space, project_id, body, pinned, created_at, updated_at")
           .order("created_at", { ascending: false })
           .limit(500),
+        sb.from("cover_reviews").select("space, review, points, written_at"),
+        sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, updated_at"),
       ]);
       var failed = results.filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -2339,6 +3010,8 @@
       state.meetings = results[5].data || [];
       // A note you just saved stays on screen until the database has it.
       state.notes = (results[6].data || []).concat(state.notes.filter(function (n) { return n.pending; }));
+      state.covers = mergeCovers(results[7].data || []);
+      state.starts = mergeStarts(results[8].data || []);
       var items = results[0].data || [];
       state.people = await loadPeople(items);
       announceNew(items);
@@ -2396,7 +3069,7 @@
     var closing = action === "done" || action === "dismiss";
     if (item && closing) {
       var label = action === "dismiss" ? "Dismissed" : item.kind === "decision" ? "✓ Noted" : "✓ Done";
-      await leave(document.querySelector('[data-item="' + id + '"]'), label, action === "done" ? "ok" : "dismissed");
+      await leave(onPage('[data-item="' + id + '"]'), label, action === "done" ? "ok" : "dismissed");
     }
     // Show the change without waiting for fresh data.
     if (item) {
@@ -2442,6 +3115,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "cover_reviews" }, reloadSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }
         else setLive("Reconnecting", false);
@@ -2586,13 +3260,19 @@
     fold.querySelector("summary").addEventListener("click", function () { state.folds[id] = !fold.open; });
   });
 
-  $("note-form").addEventListener("submit", function (event) { event.preventDefault(); saveNote(); });
-  $("note-body").addEventListener("input", function () { grow($("note-body")); });
-  $("note-body").addEventListener("keydown", function (event) {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); saveNote(); }
+  [false, true].forEach(function (quick) {
+    var pre = quick ? "cvnote-" : "note-";
+    $(pre + "form").addEventListener("submit", function (event) { event.preventDefault(); saveNote(quick); });
+    $(pre + "body").addEventListener("input", function () { grow($(pre + "body")); });
+    $(pre + "body").addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); saveNote(quick); }
+    });
+    $(pre + "space").addEventListener("change", function () { $(pre + "error").hidden = true; syncNoteForm(); });
   });
-  $("note-space").addEventListener("change", function () { $("note-error").hidden = true; syncNoteForm(); });
-  window.addEventListener("resize", function () { if (state.view === "notes") fitNotes(); });
+  window.addEventListener("resize", function () {
+    if (state.view === "notes") fitNotes();
+    fitDrafts();
+  });
 
   $("alerts").addEventListener("click", function () {
     Notification.requestPermission().then(refreshAlertsButton);
@@ -2614,6 +3294,8 @@
         state.items = [];
         state.meetings = [];
         state.notes = [];
+        state.covers = [];
+        state.starts = [];
         state.seen = null;
         show(false);
       }

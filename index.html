@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="21">
+  <meta name="desk-version" content="22">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=21">
+  <link rel="stylesheet" href="style.css?v=22">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -50,6 +50,31 @@
 
     <main>
       <p id="search-empty" class="empty search-empty" hidden></p>
+      <section aria-label="Today" data-view="today" class="today">
+        <div class="today-grid">
+          <div class="today-col">
+            <div id="cv-next" class="tsec cv-block"></div>
+            <div id="cv-tasks" class="tsec cv-block"></div>
+          </div>
+          <div class="today-col">
+            <div id="cv-inbox" class="tsec cv-block"></div>
+            <div id="cv-review" class="tsec cv-block"></div>
+            <div id="cv-note" class="tsec cv-block">
+              <div class="tsec-head"><h2 class="tsec-name">Quick note</h2></div>
+              <form id="cvnote-form" class="note-form cv-pad" autocomplete="off">
+                <textarea id="cvnote-body" rows="2" maxlength="20000" placeholder="Write a note" aria-label="Quick note"></textarea>
+                <div class="note-row">
+                  <select id="cvnote-space" aria-label="Organisation"></select>
+                  <button id="cvnote-save" type="submit" class="primary">Save</button>
+                </div>
+                <p id="cvnote-error" class="error" role="alert" hidden></p>
+                <p id="cvnote-ok" class="fine" role="status" hidden>Saved. You can find it in Notes.</p>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section aria-label="Inbox" data-view="inbox" class="inbox">
         <div id="list-inbox" class="inbox-grid"></div>
       </section>
@@ -239,9 +264,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=21"></script>
-  <script src="config.js?v=21"></script>
-  <script src="format.js?v=21"></script>
-  <script src="app.js?v=21"></script>
+  <script src="vendor/supabase-2.119.0.js?v=22"></script>
+  <script src="config.js?v=22"></script>
+  <script src="format.js?v=22"></script>
+  <script src="app.js?v=22"></script>
 </body>
 </html>
