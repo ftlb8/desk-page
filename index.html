@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="18">
+  <meta name="desk-version" content="19">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=18">
+  <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -48,17 +48,34 @@
         <div id="list-waiting" class="list"></div>
       </section>
 
-      <section aria-labelledby="h-commit" data-view="commitments">
-        <h2 id="h-commit">Commitments <span id="n-commit" class="count"></span></h2>
-        <div id="list-commit" class="list"></div>
+      <section aria-labelledby="h-plans" data-view="planning">
+        <h2 id="h-plans">Planning</h2>
+        <div class="task-tools"><button id="plan-add" type="button" class="btn">Add a plan</button></div>
+        <div id="list-plans" class="list"></div>
+        <div id="box-projects" class="projects-box">
+          <h3 class="theme">Other projects</h3>
+          <div id="list-projects"></div>
+        </div>
         <details id="box-decisions">
-          <summary>Decisions <span id="n-decisions" class="count"></span></summary>
+          <summary>Decisions from your meetings · <span id="n-decisions" class="count"></span></summary>
           <div id="list-decisions" class="list"></div>
         </details>
       </section>
 
       <section aria-labelledby="h-tasks" data-view="tasks">
         <h2 id="h-tasks">Tasks <span id="n-tasks" class="count"></span></h2>
+        <details id="box-suggested">
+          <summary>Suggested tasks · <span id="n-suggested" class="count"></span></summary>
+          <div id="list-suggested" class="list"></div>
+          <details id="box-later-sug" class="sub-box">
+            <summary>Later <span id="n-later-sug" class="count"></span></summary>
+            <div id="list-later-sug" class="list"></div>
+          </details>
+          <details id="box-closed-sug" class="sub-box">
+            <summary>Closed in the last 24 hours <span id="n-closed-sug" class="count"></span></summary>
+            <div id="list-closed-sug" class="list"></div>
+          </details>
+        </details>
         <form id="task-form" class="task-form" autocomplete="off">
           <input id="task-title" type="text" placeholder="Add a task in your own words, e.g. “payroll run every other Friday”" maxlength="500" required aria-label="New task">
           <button id="task-add" type="submit" class="btn">Add</button>
@@ -98,6 +115,37 @@
       <span id="toast-text"></span>
       <button id="toast-undo" type="button" class="quiet">Undo</button>
     </div>
+
+    <dialog id="plan-dialog" class="task-dialog" aria-labelledby="pd-heading">
+      <form id="pd-form" method="dialog" autocomplete="off">
+        <h2 id="pd-heading">Plan</h2>
+        <div id="pd-space-box" hidden>
+          <label for="pd-space">Organisation</label>
+          <select id="pd-space"><option value="metaculus">Metaculus</option><option value="cea">CEA</option><option value="personal">Personal</option></select>
+        </div>
+        <label for="pd-name">Name</label>
+        <input id="pd-name" type="text" maxlength="200" required>
+        <div class="td-row">
+          <div><label for="pd-stage">Stage</label><select id="pd-stage"></select></div>
+          <div><label for="pd-target">Target date</label><input id="pd-target" type="date"></div>
+        </div>
+        <label for="pd-what">What it is</label>
+        <textarea id="pd-what" rows="4" maxlength="4000"></textarea>
+        <label for="pd-next">Next step</label>
+        <input id="pd-next" type="text" maxlength="300">
+        <label for="pd-after">Comes after (what it depends on)</label>
+        <input id="pd-after" type="text" maxlength="300">
+        <label for="pd-people">People</label>
+        <input id="pd-people" type="text" maxlength="300">
+        <label for="pd-tools">Tools</label>
+        <input id="pd-tools" type="text" maxlength="300">
+        <p id="pd-error" class="error" role="alert" hidden></p>
+        <div class="td-actions">
+          <button id="pd-save" type="submit" class="primary">Save</button>
+          <button id="pd-cancel" type="button" class="btn subtle">Cancel</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="task-dialog" class="task-dialog" aria-labelledby="td-heading">
       <form id="td-form" method="dialog" autocomplete="off">
@@ -153,9 +201,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=18"></script>
-  <script src="config.js?v=18"></script>
-  <script src="format.js?v=18"></script>
-  <script src="app.js?v=18"></script>
+  <script src="vendor/supabase-2.119.0.js?v=19"></script>
+  <script src="config.js?v=19"></script>
+  <script src="format.js?v=19"></script>
+  <script src="app.js?v=19"></script>
 </body>
 </html>

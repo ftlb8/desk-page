@@ -20,8 +20,8 @@
   ];
   var VIEWS = [
     { id: "inbox", label: "Inbox" },
-    { id: "commitments", label: "Commitments" },
     { id: "tasks", label: "Tasks" },
+    { id: "planning", label: "Planning" },
     { id: "meetings", label: "Meetings" },
   ];
   var DAY = 24 * 60 * 60 * 1000;
@@ -31,12 +31,15 @@
     tasks: [],
     meetings: [],
     openMeetings: {}, // ids of meetings whose details you opened
+    openPlans: {},    // ids of plans whose details you opened
+    reviewing: {},    // ids of plans whose review is running
+    doneSuggestions: {}, // review suggestions that became tasks this session, keyed by plan id and text
     projects: [],
     people: {},   // "space:userId" -> { name, is_vip }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
-    view: readPref("desk.view", "inbox"), // inbox | commitments | tasks | meetings
+    view: readPref("desk.view", "inbox"), // inbox | tasks | planning | meetings
     taskMode: readPref("desk.task-mode", "list"), // list | days
     project: null, // show only this project's tasks
     seen: null,   // ids already shown, to tell which waiting items are new
@@ -46,6 +49,9 @@
   };
 
   function $(id) { return document.getElementById(id); }
+
+  // An old saved choice (such as the former Commitments view) falls back to Inbox.
+  if (!VIEWS.some(function (v) { return v.id === state.view; })) state.view = "inbox";
 
   function readPref(key, fallback) {
     try { return localStorage.getItem(key) || fallback; } catch (_) { return fallback; }
@@ -401,9 +407,9 @@
       var where = from.length > 1
         ? (from.some(isGranola) && !from.every(isGranola) ? "Notes and Granola" : from.length + " sources")
         : (from[0] ? from[0].label : "Meeting notes");
-      meta = (item.kind === "promise" && item.owed_to ? "To " + item.owed_to + " · " : "") + where + (met ? " · meeting of " + met : "");
+      meta = (item.kind === "promise" && item.owed_to ? "Promised to " + item.owed_to + " · " : "") + where + (met ? " · meeting of " + met : "");
     } else {
-      meta = (promise ? "To " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
+      meta = (promise ? "Promised to " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
     }
     top.appendChild(el("span", "meta", meta));
     node.appendChild(top);
@@ -445,16 +451,20 @@
     if (kind === "decision") {
       actions.appendChild(button("Noted", "btn", function () { act(item.id, "done"); }));
       actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
-    } else if (kind === "waiting" || kind === "look" || kind === "commit") {
+    } else if (kind === "commit") {
+      // A suggested task: turn it into a task, or say it is done or not a task.
+      if (taskFor(item)) {
+        actions.appendChild(el("span", "made", "In your tasks"));
+      } else {
+        var add = button("Add as task", "btn", function () { taskFromItem(item, add); });
+        actions.appendChild(add);
+      }
+      actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
+      actions.appendChild(laterControl(item, "btn subtle"));
+      actions.appendChild(button("Not a task", "btn subtle", function () { act(item.id, "dismiss"); }));
+    } else if (kind === "waiting" || kind === "look") {
       actions.appendChild(button("Done", "btn", function () { act(item.id, "done"); }));
-      var later = el("span", "later");
-      later.appendChild(button("Later", "btn", function () { later.classList.toggle("open"); }));
-      var choices = el("span", "choices");
-      laterChoices().forEach(function (c) {
-        choices.appendChild(button(c.label, "btn small", function () { act(item.id, "snooze", c.at.toISOString()); }));
-      });
-      later.appendChild(choices);
-      actions.appendChild(later);
+      actions.appendChild(laterControl(item, "btn"));
       if (taskFor(item)) {
         actions.appendChild(el("span", "made", "In your tasks"));
       } else {
@@ -467,6 +477,18 @@
     }
     node.appendChild(actions);
     return node;
+  }
+
+  // "Later" and the times it offers, as one control.
+  function laterControl(item, className) {
+    var later = el("span", "later");
+    later.appendChild(button("Later", className, function () { later.classList.toggle("open"); }));
+    var choices = el("span", "choices");
+    laterChoices().forEach(function (c) {
+      choices.appendChild(button(c.label, "btn small", function () { act(item.id, "snooze", c.at.toISOString()); }));
+    });
+    later.appendChild(choices);
+    return later;
   }
 
   function laterChoices() {
@@ -490,15 +512,8 @@
     items.forEach(function (item) { list.appendChild(card(item, kind)); });
   }
 
-  // Commitments are shown under the project or theme they belong to.
-  function fillByTheme(listId, countId, items, kind, emptyText) {
-    var list = $(listId);
-    list.textContent = "";
-    $(countId).textContent = items.length ? String(items.length) : "";
-    if (!items.length) {
-      if (emptyText) list.appendChild(el("p", "empty", emptyText));
-      return;
-    }
+  // Suggestions and decisions are shown under the project or theme they belong to.
+  function themeBlocks(list, items, kind) {
     var themes = {};
     var order = [];
     items.forEach(function (item) {
@@ -517,6 +532,32 @@
     });
   }
 
+  function fillByTheme(listId, countId, items, kind) {
+    var list = $(listId);
+    list.textContent = "";
+    $(countId).textContent = items.length ? String(items.length) : "";
+    themeBlocks(list, items, kind);
+  }
+
+  // The tray of suggested tasks: promises first, then the to-dos, each under its theme.
+  function fillSuggested(items) {
+    var list = $("list-suggested");
+    list.textContent = "";
+    $("n-suggested").textContent = items.length ? String(items.length) : "";
+    themeBlocks(list, items.filter(isPromise), "commit");
+    themeBlocks(list, items.filter(function (i) { return !isPromise(i); }), "commit");
+  }
+
+  // Which view an item lives in: suggested tasks in Tasks, decisions in Planning, the rest in Inbox.
+  function viewFor(item) {
+    if (item.lane !== "commitment") return "inbox";
+    return item.kind === "decision" ? "planning" : "tasks";
+  }
+
+  function isPromise(item) {
+    return item.kind === "promise" || (!item.kind && item.lane === "commitment");
+  }
+
   function render() {
     var groups = { waiting: [], commit: [], decision: [], look: [], later: [], closed: [] };
     var waitingBySpace = {};
@@ -526,14 +567,14 @@
       if (state.filter !== "all" && item.space !== state.filter) return;
       groups[b].push(item);
     });
-    // Later and Closed follow the section: promises in Commitments, everything else in Inbox.
-    var promises = state.view === "commitments";
+    // Later and Closed follow the section: suggestions in Tasks, decisions in Planning, everything else in Inbox.
     ["later", "closed"].forEach(function (k) {
-      groups[k] = groups[k].filter(function (item) { return (item.lane === "commitment") === promises; });
+      groups[k] = groups[k].filter(function (item) { return viewFor(item) === state.view; });
     });
     groups.waiting.sort(byPriority);
     groups.look.sort(byPriority);
     groups.commit.sort(function (a, b) {
+      if (isPromise(a) !== isPromise(b)) return isPromise(a) ? -1 : 1; // promises first
       if (a.due_on && b.due_on && a.due_on !== b.due_on) return a.due_on < b.due_on ? -1 : 1;
       if (a.due_on !== b.due_on) return a.due_on ? -1 : 1; // dated promises first
       return byPriority(a, b);
@@ -542,25 +583,34 @@
     groups.closed.sort(function (a, b) { return a.closed_at > b.closed_at ? -1 : 1; });
 
     fill("list-waiting", "n-waiting", groups.waiting, "waiting", "Nothing is waiting on you.");
-    fillByTheme("list-commit", "n-commit", groups.commit, "commit", "No open promises or to-dos.");
-    fillByTheme("list-decisions", "n-decisions", groups.decision, "decision", null);
-    $("box-decisions").hidden = state.view !== "commitments" || !groups.decision.length;
+    fillSuggested(groups.commit);
+    $("box-suggested").hidden = !(groups.commit.length || groups.later.length || groups.closed.length);
+    $("n-suggested").textContent = String(groups.commit.length);
+    fillByTheme("list-decisions", "n-decisions", groups.decision, "decision");
+    $("box-decisions").hidden = !groups.decision.length;
     fill("list-look", "n-look", groups.look, "look", "Nothing else to look at.");
     renderTasks();
-    fill("list-later", "n-later", groups.later, "later", null);
-    fill("list-closed", "n-closed", groups.closed, "closed", null);
+    // In Tasks, Later and Closed for the suggestions sit inside the tray; elsewhere they sit at the bottom.
+    var inTasks = state.view === "tasks";
+    fill("list-later", "n-later", inTasks ? [] : groups.later, "later", null);
+    fill("list-closed", "n-closed", inTasks ? [] : groups.closed, "closed", null);
+    fill("list-later-sug", "n-later-sug", inTasks ? groups.later : [], "later", null);
+    fill("list-closed-sug", "n-closed-sug", inTasks ? groups.closed : [], "closed", null);
+    $("box-later-sug").hidden = !(inTasks && groups.later.length);
+    $("box-closed-sug").hidden = !(inTasks && groups.closed.length);
     document.querySelectorAll("[data-view]").forEach(function (section) {
       section.hidden = section.getAttribute("data-view") !== state.view;
     });
+    renderPlanning();
     renderMeetings();
-    var lists = state.view === "inbox" || state.view === "commitments";
-    $("box-later").hidden = !lists || !groups.later.length;
-    $("box-closed").hidden = !lists || !groups.closed.length;
+    var lists = state.view !== "meetings";
+    $("box-later").hidden = !lists || inTasks || !groups.later.length;
+    $("box-closed").hidden = !lists || inTasks || !groups.closed.length;
 
     var openTasks = state.tasks.filter(function (t) {
       return t.status === "open" && (state.filter === "all" || t.space === state.filter);
     }).length;
-    var counts = { inbox: groups.waiting.length, commitments: groups.commit.length, tasks: openTasks, meetings: meetingsLeftToday() };
+    var counts = { inbox: groups.waiting.length, tasks: openTasks, meetings: meetingsLeftToday() };
     var views = $("views");
     views.textContent = "";
     VIEWS.forEach(function (v) {
@@ -663,7 +713,7 @@
   }
 
   function goToItem(item) {
-    state.view = item.lane === "commitment" ? "commitments" : "inbox";
+    state.view = viewFor(item);
     writePref("desk.view", state.view);
     if (state.filter !== "all" && state.filter !== item.space) {
       state.filter = "all";
@@ -792,6 +842,305 @@
         list.appendChild(fold);
       }
     });
+  }
+
+  // ---------- Planning ----------
+
+  var STAGES = [
+    { id: "in_progress", label: "In progress" },
+    { id: "ongoing", label: "Ongoing" },
+    { id: "planned", label: "Planned" },
+    { id: "idea", label: "Idea" },
+    { id: "paused", label: "Paused" },
+    { id: "done", label: "Done" },
+  ];
+
+  function stageOf(p) {
+    return STAGES.some(function (s) { return s.id === p.stage; }) ? p.stage : "idea";
+  }
+
+  function stageLabel(p) {
+    return STAGES.filter(function (s) { return s.id === stageOf(p); })[0].label;
+  }
+
+  function stageRank(p) {
+    for (var i = 0; i < STAGES.length; i++) if (STAGES[i].id === stageOf(p)) return i;
+    return STAGES.length;
+  }
+
+  function openTasksOf(p) {
+    return state.tasks.filter(function (t) { return t.project_id === p.id && t.status === "open"; });
+  }
+
+  function planDate(day) {
+    var d = new Date(day + "T12:00:00");
+    var opts = { weekday: "short", day: "numeric", month: "short" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return d.toLocaleDateString([], opts);
+  }
+
+  function shortDate(d) {
+    return d.getDate() + " " + d.toLocaleDateString([], { month: "short" });
+  }
+
+  function suggestionKey(p, text) {
+    return p.id + "\n" + String(text).trim().toLowerCase();
+  }
+
+  // The review's suggested tasks, without the ones already a task on this plan or already added this session.
+  function openSuggestions(p, review, open) {
+    var have = {};
+    open.forEach(function (t) { have[String(t.title).trim().toLowerCase()] = true; });
+    return (Array.isArray(review.suggested_tasks) ? review.suggested_tasks : []).map(function (x) { return String(x || "").trim(); })
+      .filter(function (text) { return text && !have[text.toLowerCase()] && !state.doneSuggestions[suggestionKey(p, text)]; });
+  }
+
+  function suggestTask(p, text) {
+    var task = blankTask(p.space, text);
+    task.project = p.name;
+    task.context = "Suggested by the review of " + p.name;
+    task.fromReview = suggestionKey(p, text);
+    showDialog(task, null);
+  }
+
+  // Asks Claude to look at the plan again. Takes up to a minute; the rest of the page stays usable.
+  async function reviewPlan(p) {
+    if (state.reviewing[p.id]) return;
+    state.reviewing[p.id] = true;
+    render();
+    var failed = "The review did not finish. Try again in a minute.";
+    try {
+      var res = await sb.functions.invoke("plan-review", { body: { plan_id: p.id } });
+      if (res.error || !res.data || res.data.ok === false || !res.data.plan) {
+        notice(failed);
+      } else {
+        var now = state.projects.filter(function (x) { return x.id === p.id; })[0] || p;
+        now.standing = res.data.plan.standing || null;
+        now.review = res.data.plan.review || {};
+        now.reviewed_at = res.data.plan.reviewed_at || null;
+        state.openPlans[p.id] = true;
+        notice("");
+      }
+    } catch (_) {
+      notice(failed);
+    }
+    delete state.reviewing[p.id];
+    render();
+  }
+
+  function planCard(p) {
+    var node = el("article", "card plan");
+    node.setAttribute("data-plan", p.id);
+    var top = el("div", "card-top");
+    top.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
+    top.appendChild(el("span", "kind", stageLabel(p)));
+    node.appendChild(top);
+    node.appendChild(el("h3", "title", p.name));
+    var preview = null;
+    if (p.what) {
+      preview = el("p", "gist clamp", p.what);
+      preview.hidden = !!state.openPlans[p.id]; // the fold shows the full text
+      node.appendChild(preview);
+    }
+    var open = openTasksOf(p);
+    var review = p.review && typeof p.review === "object" ? p.review : {};
+    if (review.attention) {
+      var warn = el("p", "reason attention");
+      warn.appendChild(el("span", "flag flag-3", "Needs attention"));
+      warn.appendChild(document.createTextNode(" " + review.attention));
+      node.appendChild(warn);
+    }
+    if (p.next_step) node.appendChild(el("p", "reason", "Next: " + p.next_step));
+    if (p.target_on) node.appendChild(el("p", "reason", "By " + planDate(p.target_on)));
+    if (p.depends_on) node.appendChild(el("p", "reason", "After: " + p.depends_on));
+    node.appendChild(el("p", "reason", open.length ? open.length + (open.length === 1 ? " open task" : " open tasks") : "No tasks yet"));
+
+    var steps = Array.isArray(review.next_steps) ? review.next_steps.filter(Boolean) : [];
+    var suggested = openSuggestions(p, review, open);
+    var sources = (Array.isArray(review.sources) ? review.sources : []).filter(function (x) { return x && x.label; });
+    var links = (Array.isArray(p.links) ? p.links : []).map(function (l) {
+      return l && httpsLink(l.url) ? { href: httpsLink(l.url), label: l.label || F.host(httpsLink(l.url)) } : null;
+    }).filter(Boolean);
+    var fold = el("details", "message");
+    fold.appendChild(el("summary", null, "Details"));
+    if (p.what) fold.appendChild(el("p", "gist", p.what));
+    if (p.standing) {
+      fold.appendChild(el("p", "owed-head", "Where it stands"));
+      fold.appendChild(el("p", "gist", p.standing));
+    }
+    if (p.reviewed_at) fold.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at))));
+    if (steps.length) {
+      fold.appendChild(el("p", "owed-head", "Suggested next steps"));
+      var ul = el("ul", "plan-steps");
+      steps.forEach(function (t) { ul.appendChild(el("li", null, String(t))); });
+      fold.appendChild(ul);
+    }
+    if (suggested.length) {
+      fold.appendChild(el("p", "owed-head", "Suggested tasks"));
+      suggested.forEach(function (text) {
+        var row = el("div", "plan-suggest");
+        row.appendChild(el("span", "plan-suggest-text", text));
+        row.appendChild(button("Add as task", "btn small", function () { suggestTask(p, text); }));
+        fold.appendChild(row);
+      });
+    }
+    if (sources.length) {
+      fold.appendChild(el("p", "owed-head", "From"));
+      sources.forEach(function (x) {
+        var row = el("p", "plan-source");
+        var href = httpsLink(x.url);
+        var day = x.date ? new Date(x.date + "T12:00:00") : null;
+        var when = day && !isNaN(day.getTime()) ? " · " + shortDate(day) : "";
+        if (href) {
+          row.appendChild(linkTo(href, x.label + " ↗", "chip"));
+          if (when) row.appendChild(document.createTextNode(when));
+        } else {
+          row.appendChild(document.createTextNode(x.label + when));
+        }
+        fold.appendChild(row);
+      });
+    }
+    if (review.note) fold.appendChild(el("p", "fine", String(review.note)));
+    if (p.people) fold.appendChild(el("p", "reason", "With: " + p.people));
+    if (p.tools) fold.appendChild(el("p", "reason", "Tools: " + p.tools));
+    if (links.length) {
+      var box = el("p", "plan-links");
+      links.forEach(function (l) { box.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
+      fold.appendChild(box);
+    }
+    if (open.length) {
+      fold.appendChild(el("p", "owed-head", "Open tasks"));
+      open.forEach(function (t) {
+        var row = el("div", "plan-task");
+        row.appendChild(button(t.title, "ref", function () { openTask(t); }));
+        fold.appendChild(row);
+      });
+    }
+    fold.open = !!state.openPlans[p.id];
+    fold.addEventListener("toggle", function () {
+      if (fold.open) state.openPlans[p.id] = true; else delete state.openPlans[p.id];
+      if (preview) preview.hidden = fold.open;
+    });
+    node.appendChild(fold);
+
+    var actions = el("div", "actions");
+    actions.appendChild(button("Add task", "btn", function () {
+      var task = blankTask(p.space, "");
+      task.project = p.name;
+      showDialog(task, null);
+    }));
+    actions.appendChild(button("See tasks", "btn", function () {
+      state.project = p.id;
+      state.view = "tasks";
+      writePref("desk.view", "tasks");
+      render();
+      window.scrollTo(0, 0);
+    }));
+    var again = button(state.reviewing[p.id] ? "Reviewing…" : "Review now", "btn", function () { reviewPlan(p); });
+    again.disabled = !!state.reviewing[p.id];
+    actions.appendChild(again);
+    actions.appendChild(button("Edit", "btn subtle", function () { openPlanDialog(p); }));
+    node.appendChild(actions);
+    return node;
+  }
+
+  function renderPlanning() {
+    var visible = state.projects.filter(function (p) { return state.filter === "all" || p.space === state.filter; });
+    var plans = visible.filter(function (p) { return p.is_plan; }).sort(function (a, b) {
+      return stageRank(a) - stageRank(b) || (String(a.name).toLowerCase() < String(b.name).toLowerCase() ? -1 : 1);
+    });
+    var list = $("list-plans");
+    list.textContent = "";
+    plans.forEach(function (p) { list.appendChild(planCard(p)); });
+    if (!plans.length) list.appendChild(el("p", "empty", "You have no plans here yet. Add one for anything that will take more than a single task."));
+
+    var others = visible.filter(function (p) { return !p.is_plan; });
+    var rest = $("list-projects");
+    rest.textContent = "";
+    $("box-projects").hidden = !others.length;
+    others.forEach(function (p) {
+      var row = el("div", "task");
+      var main = el("div", "task-main");
+      main.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
+      main.appendChild(el("span", null, p.name));
+      var n = openTasksOf(p).length;
+      main.appendChild(el("span", "repeat", n ? n + (n === 1 ? " open task" : " open tasks") : "No tasks yet"));
+      row.appendChild(main);
+      row.appendChild(button("Make it a plan", "btn small", function () { makePlan(p); }));
+      rest.appendChild(row);
+    });
+  }
+
+  var editingPlan = null; // the plan in the dialog; null while adding one
+
+  function openPlanDialog(p) {
+    editingPlan = p || null;
+    $("pd-heading").textContent = p ? "Edit plan" : "New plan";
+    $("pd-space-box").hidden = !!p || state.filter !== "all";
+    $("pd-space").value = p ? p.space : (state.filter !== "all" ? state.filter : readPref("desk.task-space", "metaculus"));
+    $("pd-name").value = p ? p.name : "";
+    $("pd-stage").value = p ? stageOf(p) : "idea";
+    $("pd-what").value = (p && p.what) || "";
+    $("pd-next").value = (p && p.next_step) || "";
+    $("pd-target").value = (p && p.target_on) || "";
+    $("pd-after").value = (p && p.depends_on) || "";
+    $("pd-people").value = (p && p.people) || "";
+    $("pd-tools").value = (p && p.tools) || "";
+    $("pd-error").hidden = true;
+    var dialog = $("plan-dialog");
+    if (!dialog.open) dialog.showModal();
+  }
+
+  async function savePlan() {
+    var problem = $("pd-error");
+    problem.hidden = true;
+    var name = $("pd-name").value.trim();
+    if (!name) return;
+    var text = function (id) { return $(id).value.trim() || null; };
+    var row = {
+      name: name,
+      stage: $("pd-stage").value,
+      what: text("pd-what"),
+      next_step: text("pd-next"),
+      target_on: $("pd-target").value || null,
+      depends_on: text("pd-after"),
+      people: text("pd-people"),
+      tools: text("pd-tools"),
+      updated_at: new Date().toISOString(),
+    };
+    if (editingPlan) {
+      // Shown at once; if the save fails you are told and the real data comes back.
+      var current = state.projects.filter(function (p) { return p.id === editingPlan.id; })[0] || editingPlan;
+      Object.keys(row).forEach(function (k) { current[k] = row[k]; });
+      $("plan-dialog").close();
+      render();
+      var res = await sb.from("projects").update(row).eq("id", current.id);
+      if (res.error) notice("That did not save: " + res.error.message);
+      await load();
+      return;
+    }
+    try {
+      row.space = $("pd-space").value;
+      row.is_plan = true;
+      var made = await sb.from("projects").insert(row);
+      if (made.error) throw new Error(made.error.message);
+    } catch (err) {
+      problem.textContent = "Not saved: " + (err && err.message ? err.message : "unknown error");
+      problem.hidden = false;
+      return;
+    }
+    $("plan-dialog").close();
+    await load();
+  }
+
+  async function makePlan(p) {
+    p.is_plan = true;
+    p.updated_at = new Date().toISOString();
+    render();
+    openPlanDialog(p);
+    var res = await sb.from("projects").update({ is_plan: true, updated_at: p.updated_at }).eq("id", p.id);
+    if (res.error) notice("That did not save: " + res.error.message);
+    await load();
   }
 
   // ---------- Tasks ----------
@@ -1063,7 +1412,7 @@
     $("td-related-box").hidden = !draft.related.length;
     draft.related.forEach(function (r) {
       var row = el("div", "td-link");
-      var kind = r.kind === "task" ? "Task" : r.lane === "commitment" ? "Promise" : "Inbox";
+      var kind = r.kind === "task" ? "Task" : r.lane === "commitment" ? "Suggested" : "Inbox";
       row.appendChild(el("span", "kind", kind));
       var target = r.kind === "task"
         ? state.tasks.filter(function (t) { return t.id === r.id && t.status === "open"; })[0]
@@ -1075,10 +1424,7 @@
       } else {
         row.appendChild(button(r.title, "ref", function () {
           $("task-dialog").close();
-          state.view = target.lane === "commitment" ? "commitments" : "inbox";
-          writePref("desk.view", state.view);
-          if (state.filter !== "all" && state.filter !== target.space) state.filter = "all";
-          render();
+          goToItem(target);
         }));
       }
       box.appendChild(row);
@@ -1155,6 +1501,7 @@
   }
 
   async function taskFromItem(item, trigger) {
+    var triggerLabel = trigger ? trigger.textContent : "";
     if (trigger) { trigger.disabled = true; trigger.textContent = "Working it out…"; }
     var task = blankTask(item.space, item.title);
     task.source_item_id = item.id;
@@ -1173,7 +1520,19 @@
     if (s) s.space = item.space;
     var basis = !fromNotes(item) ? "the message" : sourcesOf(item).length > 1 ? "what the notes and Granola say" : "your meeting notes";
     showDialog(withSuggestion(task, s), s ? "Suggested from " + basis + ". Change anything, then save." : "Could not get a suggestion, so this is filled in from the item. Change anything, then save.");
-    if (trigger) { trigger.disabled = false; trigger.textContent = "Make a task"; }
+    if (trigger) { trigger.disabled = false; trigger.textContent = triggerLabel; }
+  }
+
+  // A suggested task that has become a task leaves the tray (the task keeps its link to it).
+  async function closeSuggestion(id) {
+    var item = state.items.filter(function (i) { return i.id === id; })[0];
+    if (!item || viewFor(item) !== "tasks" || (item.status !== "open" && item.status !== "snoozed")) return;
+    item.status = "done";
+    item.closed_by = "user";
+    item.closed_at = new Date().toISOString();
+    item.snooze_until = null;
+    var res = await sb.rpc("set_item_state", { p_item: id, p_action: "done", p_until: null });
+    if (res.error) notice("The task was saved, but the suggestion did not close: " + res.error.message);
   }
 
   async function saveDraft() {
@@ -1202,6 +1561,8 @@
       } else {
         if (draft.source_item_id) row.source_item_id = draft.source_item_id;
         res = await sb.from("tasks").insert(row);
+        if (!res.error && draft.source_item_id) await closeSuggestion(draft.source_item_id);
+        if (!res.error && draft.fromReview) state.doneSuggestions[draft.fromReview] = true;
       }
       if (res.error) throw new Error(res.error.message);
     } catch (err) {
@@ -1247,7 +1608,7 @@
           .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
           .order("created_at", { ascending: true })
           .limit(1000),
-        sb.from("projects").select("id, space, name").eq("status", "active").order("name").limit(1000),
+        sb.from("projects").select("id, space, name, is_plan, what, stage, depends_on, next_step, target_on, people, tools, links, standing, review, reviewed_at, updated_at").eq("status", "active").order("name").limit(1000),
         // From the start of today (a little earlier, so all-day events dated in another time zone are not missed).
         sb.from("meetings")
           .select("id, space, event_id, title, starts_at, ends_at, all_day, status, my_response, join_url, event_url, location, organizer, attendees, recurring_event_id, brief, owed")
@@ -1359,6 +1720,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }
         else setLive("Reconnecting", false);
@@ -1429,6 +1791,15 @@
     add.disabled = false;
     add.textContent = "Add";
     $("task-title").value = "";
+  });
+
+  $("plan-add").addEventListener("click", function () { openPlanDialog(null); });
+  $("pd-form").addEventListener("submit", function (event) { event.preventDefault(); savePlan(); });
+  $("pd-cancel").addEventListener("click", function () { $("plan-dialog").close(); });
+  STAGES.forEach(function (st) {
+    var o = el("option", null, st.label);
+    o.value = st.id;
+    $("pd-stage").appendChild(o);
   });
 
   $("td-form").addEventListener("submit", function (event) { event.preventDefault(); saveDraft(); });
