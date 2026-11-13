@@ -61,6 +61,13 @@
     changesAll: false, // "Show all" is on in the What changed strip
     log: {},          // project id -> { rows, loading, error }: the whole log of a project, loaded when its page is first opened
     fix: null,        // { id, where, text, error } while a change line is being corrected
+    keyDates: [],     // proposed and open key dates, and the ones done in the last 30 days
+    kdForm: null,     // { pageId, date, last, text, note, warn, about, error, saving } while a key date is being added
+    kdEdit: null,     // { id, date, last, text, note, warn, about, error, saving } while a key date is being edited
+    kdAsk: null,      // id of the key date you are being asked about removing
+    kdMore: {},       // ids of key dates whose More you opened on Today
+    kdDone: {},       // project pages whose Done fold you opened
+    kdAll: false,     // "Show all" is on in the Key dates list of the Projects tab
     addLine: null,    // { pageId, projectId, date, text, error, saving } while a line is being added
     openTasks: {},    // ids of tasks you expanded in the list
     openSections: { today: true, week: true, weeks: false, later: false }, // task sections you opened or closed
@@ -789,8 +796,24 @@
     window.scrollTo(0, 0);
   }
 
+  // A box of the key date form keeps the cursor when the page is redrawn under it (a live update, say).
+  function captureKeyFocus() {
+    var a = document.activeElement;
+    if (!a || !a.id || !a.closest || !a.closest(".kd-form")) return null;
+    return { id: a.id, start: a.selectionStart, end: a.selectionEnd };
+  }
+
+  function restoreKeyFocus(saved) {
+    if (!saved) return;
+    var n = $(saved.id);
+    if (!n || n === document.activeElement) return;
+    n.focus({ preventScroll: true });
+    try { if (saved.start !== null && saved.start !== undefined) n.setSelectionRange(saved.start, saved.end); } catch (_) { /* a date or number box has no cursor */ }
+  }
+
   function render() {
     var typing = captureDraftFocus();
+    var keyFocus = captureKeyFocus();
     markLooked();
     needles = plain(state.query).split(/\s+/).filter(Boolean);
     var searching = needles.length > 0;
@@ -908,6 +931,7 @@
       nav.appendChild(b);
     });
     restoreDraftFocus(typing);
+    restoreKeyFocus(keyFocus);
   }
 
   // ---------- Meetings ----------
@@ -1633,6 +1657,7 @@
     var parts = planParts(p);
     topicsOf(p).forEach(function (t) { parts.push(t.name, t.standing, t.what); });
     knownChanges(p).forEach(function (c) { parts.push(c.text); });
+    keyDatesOf(p).forEach(function (k) { if (k.status !== "dropped") parts.push(k.text, k.note); });
     return parts;
   }
 
@@ -1678,6 +1703,8 @@
     } else {
       inside.appendChild(el("p", "empty", "Nothing is listed as open right now."));
     }
+
+    keyDatesSection(inside, p);
 
     // Tasks
     inside.appendChild(label("Tasks"));
@@ -1857,6 +1884,8 @@
     node.appendChild(top);
     node.appendChild(el("h3", "title", p.name));
     node.appendChild(el("p", "reason card-count", countText(openTasksOf(p))));
+    var nextKey = keyDatesOf(p).filter(function (k) { return k.status === "open"; }).sort(byKeyDate)[0];
+    if (nextKey) node.appendChild(el("p", "reason kd-next kd-" + keyTone(nextKey), "Next: " + keyDay(nextKey.on_date) + ", " + nextKey.text));
     var topics = topicsOf(p);
     if (topics.length) {
       var chips = el("p", "topic-chips");
@@ -1901,8 +1930,10 @@
     node.setAttribute("data-project", "unsorted");
     node.appendChild(el("h3", "title", "Unsorted"));
     node.appendChild(el("p", "reason card-count", countText(tasks)));
-    node.appendChild(el("p", "reason", "Tasks that are not in a project yet."));
+    var looseKeys = unsortedKeys();
+    node.appendChild(el("p", "reason", looseKeys.length ? "Tasks and key dates that are not in a project yet." : "Tasks that are not in a project yet."));
     cardFold(node, "unsorted", isOpen, function (inside) {
+      if (looseKeys.length) keyDatesSection(inside, null);
       inside.appendChild(label("Tasks"));
       urgentFirst(tasks.slice().sort(taskOrder)).forEach(function (t) {
         var wrap = el("div", "unsorted-row");
@@ -1942,6 +1973,7 @@
 
   // Draws the Projects tab; returns how many cards it shows.
   function renderProjects() {
+    var keyRows = renderKeyStrip();
     renderChangesStrip();
     var visible = state.projects.filter(function (p) { return isTopLevel(p) && inFilter(p) && hit(cardParts(p)); });
     var rank = function (p) { var c = lastChangeOf(p); return c ? c.changed_on + "|" + String(c.created_at || "") : ""; };
@@ -1954,11 +1986,16 @@
     projectGroup("box-proj-projects", "list-plans", projects.map(projectCard));
     projectGroup("box-proj-areas", "list-areas", areas.map(projectCard));
     var loose = unsortedTasks();
-    if (needles.length) loose = hit(["Unsorted"].concat(loose.map(function (t) { return taskParts(t).join(" "); }))) ? loose : [];
-    projectGroup("box-proj-unsorted", "list-unsorted", loose.length ? [unsortedCard(loose)] : []);
-    var total = projects.length + areas.length + (loose.length ? 1 : 0);
+    var looseKeys = unsortedKeys();
+    if (needles.length) {
+      loose = hit(["Unsorted"].concat(loose.map(function (t) { return taskParts(t).join(" "); }))) ? loose : [];
+      looseKeys = looseKeys.filter(function (k) { return hit([k.text, k.note]); });
+    }
+    var showUnsorted = loose.length || looseKeys.length;
+    projectGroup("box-proj-unsorted", "list-unsorted", showUnsorted ? [unsortedCard(loose)] : []);
+    var total = projects.length + areas.length + (showUnsorted ? 1 : 0) + (needles.length ? keyRows : 0);
     var some = state.projects.some(function (p) { return isTopLevel(p) && inFilter(p); });
-    $("projects-empty").hidden = some || needles.length > 0 || loose.length > 0;
+    $("projects-empty").hidden = some || needles.length > 0 || showUnsorted;
     // The open page loads its change log the first time it is shown.
     var shownOpen = projects.concat(areas).filter(function (p) { return sameId(state.openProject, p.id); })[0];
     if (shownOpen) ensureLog(shownOpen);
@@ -2718,7 +2755,12 @@
         res = await sb.from("tasks").update(row).eq("id", draft.id);
       } else {
         if (draft.source_item_id) row.source_item_id = draft.source_item_id;
-        res = await sb.from("tasks").insert(row);
+        if (draft.keyDateId) {
+          res = await sb.from("tasks").insert(row).select("id").single();
+          if (!res.error && res.data) await linkKeyTask(draft.keyDateId, res.data.id);
+        } else {
+          res = await sb.from("tasks").insert(row);
+        }
         if (!res.error && draft.source_item_id) await closeSuggestion(draft.source_item_id);
         if (!res.error && draft.fromReview) state.doneSuggestions[draft.fromReview] = true;
       }
@@ -3049,7 +3091,7 @@
   }
 
   // True when this organisation has something that needs you that is newer than your last look:
-  // an open item in "Needs you", a run waiting for you, or a run that has finished.
+  // an open item in "Needs you", a run waiting for you, a run that has finished, or a key date that needs you.
   function hasUpdates(space) {
     var since = lookedAt(space);
     if (!since) return false; // never looked yet: nothing counts as new
@@ -3057,12 +3099,13 @@
       return i.space === space && i.status === "open" && i.lane === "waiting" && stampOf(i.created_at) > since;
     });
     if (item) return true;
-    return state.runs.some(function (r) {
+    var run = state.runs.some(function (r) {
       if (r.space !== space) return false;
       var t = r.status === "needs_you" ? stampOf(r.updated_at || r.finished_at)
         : (r.status === "done" || r.status === "failed") ? stampOf(r.finished_at || r.updated_at) : 0;
       return t > since;
     });
+    return run || keyDatesNeedYou(space, since);
   }
 
   // On the first visit nothing is new: every organisation starts as looked at.
@@ -3329,6 +3372,576 @@
     state.query = p.name;
     $("search").value = p.name;
     showView("notes");
+  }
+
+  // ---------- Key dates ----------
+  // Something that has to happen on or by a day and is not a task. The text and the note may have been written by a
+  // model from other people's content: they are plain text only, never linked and never HTML.
+
+  var KD_COLS = "id, space, project_id, on_date, hard_limit, text, note, warn_days, status, origin, task_id, created_at, done_at";
+  var KD_DONE_DAYS = 30;  // how far back the page loads key dates that are done
+  var KD_AHEAD = 60;      // the Projects list looks this many days ahead
+  var KD_FIRST = 5;       // lines shown before "Show all"
+  var KD_FAIL = "That did not save: ";
+  var KD_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+  // Days are counted on a calendar, from the year, month and day alone, so a time zone or a clock change never moves them.
+  function dayNumber(day) {
+    var m = KD_DAY.exec(String(day || ""));
+    if (!m) return NaN;
+    var n = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return new Date(n).getUTCMonth() === Number(m[2]) - 1 ? Math.round(n / DAY) : NaN;
+  }
+
+  function todayNumber() {
+    var n = new Date();
+    return Math.round(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / DAY);
+  }
+
+  // Whole days from your today to a day; negative when it has passed.
+  function daysTo(day) { return dayNumber(day) - todayNumber(); }
+
+  // A day as a local date at noon (never parsed as UTC midnight).
+  function dayDate(day) {
+    var m = KD_DAY.exec(String(day || ""));
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12) : null;
+  }
+
+  // "14 Dec", with the year when it is not this year.
+  function keyDay(day) {
+    var d = dayDate(day);
+    if (!d || isNaN(d.getTime())) return "";
+    return shortDate(d) + (d.getFullYear() !== new Date().getFullYear() ? " " + d.getFullYear() : "");
+  }
+
+  // "Mon 14 Dec".
+  function keyDate(day) {
+    var d = dayDate(day);
+    if (!d || isNaN(d.getTime())) return "";
+    return d.toLocaleDateString([], { weekday: "short" }) + " " + keyDay(day);
+  }
+
+  function keyCount(n) {
+    if (n === 0) return "today";
+    if (n === 1) return "tomorrow";
+    if (n > 1) return "in " + n + " days";
+    return (-n) + (n === -1 ? " day late" : " days late");
+  }
+
+  // ahead: before the day. warn: the day has come (or passed) and the last day has not. late: the last day (or the day, when there is no last day) has passed.
+  function keyTone(k) {
+    var t = todayNumber();
+    if (t > dayNumber(k.hard_limit || k.on_date)) return "late";
+    return t >= dayNumber(k.on_date) ? "warn" : "ahead";
+  }
+
+  function warnDays(k) {
+    var w = Number(k.warn_days);
+    return isNaN(w) ? 7 : w;
+  }
+
+  // The warning window has started: it is the day, or fewer than warn_days days before it, or later.
+  function keyInWindow(k) { return todayNumber() >= dayNumber(k.on_date) - warnDays(k); }
+
+  function byKeyDate(a, b) {
+    var x = dayNumber(a.on_date), y = dayNumber(b.on_date);
+    if (x !== y) return x - y;
+    var l = dayNumber(a.hard_limit || a.on_date), m = dayNumber(b.hard_limit || b.on_date);
+    if (l !== m) return l - m;
+    return String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0;
+  }
+
+  function keyById(id) {
+    return state.keyDates.filter(function (k) { return sameId(k.id, id); })[0] || null;
+  }
+
+  // The key dates of a project and its topics.
+  function keyDatesOf(p) {
+    var ids = familyIds(p);
+    return state.keyDates.filter(function (k) { return ids.some(function (id) { return sameId(id, k.project_id); }); });
+  }
+
+  // Open and proposed key dates that belong to no project.
+  function unsortedKeys() {
+    return state.keyDates.filter(function (k) {
+      return (k.status === "open" || k.status === "proposed") && (k.project_id === null || k.project_id === undefined) && inFilter(k);
+    });
+  }
+
+  function openKeys() {
+    return state.keyDates.filter(function (k) { return k.status === "open" && inFilter(k) && hit([k.text, k.note]); }).sort(byKeyDate);
+  }
+
+  function proposedKeys() {
+    return state.keyDates.filter(function (k) { return k.status === "proposed" && inFilter(k) && hit([k.text, k.note]); }).sort(byKeyDate);
+  }
+
+  // For the update dot: an open key date that has reached its day, or a proposed one, that was created or came due since you last looked.
+  function keyDatesNeedYou(space, since) {
+    var today = todayNumber();
+    return state.keyDates.some(function (k) {
+      if (k.space !== space || (k.status !== "open" && k.status !== "proposed")) return false;
+      var day = dayNumber(k.on_date);
+      var reached = day <= today;
+      if (k.status === "open" && !reached) return false;
+      if (k.origin !== "you" && stampOf(k.created_at) > since) return true;
+      var d = dayDate(k.on_date);
+      return reached && !!d && new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() > since;
+    });
+  }
+
+  // Changes a key date at once on the page, then in the database; a failed save is told and the page reloads what is stored.
+  async function saveKey(id, changes, saved) {
+    var k = keyById(id);
+    if (k) {
+      Object.keys(changes).forEach(function (f) { k[f] = changes[f]; });
+      render();
+    }
+    var res = await sb.from("key_dates").update(changes).eq("id", id);
+    if (res.error) notice(KD_FAIL + res.error.message);
+    else if (saved) saved();
+    await load();
+  }
+
+  function keyDone(k) {
+    saveKey(k.id, { status: "done", done_at: new Date().toISOString() }, function () {
+      toast("Marked done.", function () { saveKey(k.id, { status: "open", done_at: null }); });
+    });
+  }
+
+  function keyDismiss(k) {
+    saveKey(k.id, { status: "dropped" }, function () {
+      toast("Dismissed.", function () { saveKey(k.id, { status: "proposed" }); });
+    });
+  }
+
+  async function removeKey(k) {
+    state.kdAsk = null;
+    state.keyDates = state.keyDates.filter(function (x) { return !sameId(x.id, k.id); });
+    render();
+    var res = await sb.from("key_dates").delete().eq("id", k.id);
+    if (res.error) notice("That did not delete: " + res.error.message);
+    await load();
+  }
+
+  // Opens the task form with the key date filled in. The key date stays open; the task's id is stored on it once the task is saved.
+  function taskFromKey(k) {
+    var task = blankTask(k.space, k.text);
+    task.due_on = k.on_date;
+    task.project_id = k.project_id === undefined ? null : k.project_id;
+    task.keyDateId = k.id;
+    showDialog(task, "Made from a key date. The key date stays open.");
+  }
+
+  async function linkKeyTask(keyId, taskId) {
+    var k = keyById(keyId);
+    if (k) k.task_id = taskId;
+    var res = await sb.from("key_dates").update({ task_id: taskId }).eq("id", keyId);
+    if (res.error) notice("The task was saved, but it could not be linked to the key date: " + res.error.message);
+  }
+
+  function focusKey(id, selector) {
+    var node = onPage('[data-keydate="' + id + '"] ' + selector);
+    if (node) node.focus({ preventScroll: true });
+  }
+
+  // The words under More on Today: the note and the task made from it.
+  function keyPanel(k) {
+    var panel = el("div", "kd-panel");
+    panel.appendChild(k.note ? el("p", "kd-note", String(k.note)) : el("p", "empty", "There is no note."));
+    var row = el("div", "actions");
+    if (k.task_id) {
+      var task = state.tasks.filter(function (t) { return sameId(t.id, k.task_id); })[0];
+      row.appendChild(el("span", "fine", "A task was made from this."));
+      if (task && task.status === "open") row.appendChild(button("Open the task", "btn small", function () { goToTask(task); }));
+    } else {
+      row.appendChild(button("Make this a task", "btn small", function () { taskFromKey(k); }));
+    }
+    panel.appendChild(row);
+    return panel;
+  }
+
+  // One key date. where: "cover" (Today), "list" (the Projects tab list) or "page" (a project page); page is the project whose page it is.
+  function keyLine(k, where, page) {
+    if (where === "page" && state.kdEdit && sameId(state.kdEdit.id, k.id)) return keyForm(state.kdEdit, page, k);
+    var open = k.status === "open";
+    var line = el("div", "kd-line kd-" + (open ? keyTone(k) : "plain"));
+    line.setAttribute("data-keydate", k.id);
+    var main = el("div", "kd-main");
+    var when = el("p", "kd-when");
+    when.appendChild(el("span", "kd-date", keyDate(k.on_date)));
+    if (k.status !== "done") when.appendChild(el("span", "kd-count", keyCount(daysTo(k.on_date))));
+    if (k.hard_limit) when.appendChild(el("span", "kd-last", "last day " + keyDay(k.hard_limit)));
+    main.appendChild(when);
+    main.appendChild(el("p", "kd-text", String(k.text || "")));
+    var proj = projectById(k.project_id);
+    if (proj && where !== "page") {
+      var at = el("p", "kd-where");
+      at.appendChild(button(projectLabel(proj), "ref kd-project", function () { goToProject(proj); }));
+      main.appendChild(at);
+    } else if (proj && where === "page" && page && !sameId(proj.id, page.id)) {
+      var inTopic = el("p", "kd-where");
+      inTopic.appendChild(el("span", "topic-chip", proj.name));
+      main.appendChild(inTopic);
+    }
+    if (k.status === "proposed") {
+      var found = el("p", "kd-where");
+      found.appendChild(el("span", "pill kd-found", "Found by the Desk"));
+      main.appendChild(found);
+    }
+    line.appendChild(main);
+
+    var actions = el("div", "kd-actions");
+    var name = " (" + String(k.text || "").slice(0, 60) + ")";
+    if (open) {
+      var done = button("Done", "btn small", function () { keyDone(k); });
+      done.setAttribute("aria-label", "Done: " + k.text);
+      actions.appendChild(done);
+    }
+    if (open && where === "cover") {
+      var isMore = !!state.kdMore[k.id];
+      var more = button(isMore ? "Less" : "More", "quiet kd-more", function () {
+        state.kdMore[k.id] = !state.kdMore[k.id];
+        render();
+        focusKey(k.id, ".kd-more");
+      });
+      more.setAttribute("aria-expanded", isMore ? "true" : "false");
+      more.setAttribute("aria-label", (isMore ? "Less" : "More") + " about " + k.text);
+      actions.appendChild(more);
+    }
+    if (where === "page" && open) {
+      if (state.kdAsk !== null && sameId(state.kdAsk, k.id)) {
+        actions.appendChild(el("span", "note-ask", "Remove this key date?"));
+        actions.appendChild(button("Yes, remove", "btn small danger", function () { removeKey(k); }));
+        actions.appendChild(button("Keep", "btn small kd-keep", function () { state.kdAsk = null; render(); focusKey(k.id, ".kd-remove"); }));
+      } else {
+        var edit = button("Edit", "btn small subtle kd-edit", function () {
+          state.kdAsk = null;
+          state.kdForm = null;
+          state.kdEdit = {
+            id: k.id, date: k.on_date, last: k.hard_limit || "", text: String(k.text || ""), note: String(k.note || ""),
+            warn: String(warnDays(k)), about: k.project_id === null || k.project_id === undefined ? "" : String(k.project_id), error: "", saving: false,
+          };
+          render();
+          var first = onPage("#ke-date");
+          if (first) first.focus();
+        });
+        edit.setAttribute("aria-label", "Edit" + name);
+        actions.appendChild(edit);
+        var rm = button("Remove", "btn small subtle kd-remove", function () {
+          state.kdAsk = k.id;
+          render();
+          focusKey(k.id, ".kd-keep");
+        });
+        rm.setAttribute("aria-label", "Remove" + name);
+        actions.appendChild(rm);
+      }
+    }
+    if (where === "page" && k.status === "proposed") {
+      var yes = button("Confirm", "btn small", function () { saveKey(k.id, { status: "open" }); });
+      yes.setAttribute("aria-label", "Confirm" + name);
+      actions.appendChild(yes);
+      var no = button("Dismiss", "btn small subtle", function () { keyDismiss(k); });
+      no.setAttribute("aria-label", "Dismiss" + name);
+      actions.appendChild(no);
+    }
+    if (where === "page" && k.status === "done") {
+      actions.appendChild(button("Reopen", "btn small subtle", function () { saveKey(k.id, { status: "open", done_at: null }); }));
+    }
+    if (actions.children.length) line.appendChild(actions);
+    if (open && where === "cover" && state.kdMore[k.id]) line.appendChild(keyPanel(k));
+    return line;
+  }
+
+  // ----- Adding and editing -----
+
+  // What is wrong with a form, in a plain sentence; "" when it can be saved.
+  function keyProblem(form) {
+    if (isNaN(dayNumber(form.date))) return "Choose the date first.";
+    if (form.last && isNaN(dayNumber(form.last))) return "Choose a valid last day, or clear it.";
+    if (form.last && dayNumber(form.last) < dayNumber(form.date)) return "The last day cannot be earlier than the date.";
+    if (!String(form.text || "").trim()) return "Write what has to happen first.";
+    if (String(form.text).trim().length > 300) return "Keep what has to happen to 300 characters or fewer.";
+    if (String(form.note || "").trim().length > 1000) return "Keep the note to 1,000 characters or fewer.";
+    var warn = String(form.warn === undefined || form.warn === null ? "" : form.warn).trim();
+    if (!/^\d{1,3}$/.test(warn) || Number(warn) > 90) return "Choose between 0 and 90 days for the warning.";
+    return "";
+  }
+
+  function keyRow(form) {
+    return {
+      on_date: form.date,
+      hard_limit: form.last || null,
+      text: String(form.text).trim(),
+      note: String(form.note || "").trim() || null,
+      warn_days: Number(String(form.warn).trim()),
+    };
+  }
+
+  async function addKey() {
+    var form = state.kdForm;
+    if (!form || form.saving) return;
+    form.error = keyProblem(form);
+    if (form.error) { render(); focusForm("kd-error"); return; }
+    var target = projectById(form.about) || projectById(form.pageId);
+    if (!target) return;
+    form.saving = true;
+    render();
+    var row = keyRow(form);
+    row.space = target.space;
+    row.project_id = target.id;
+    row.status = "open";
+    row.origin = "you";
+    var res = await sb.from("key_dates").insert(row).select(KD_COLS).single();
+    if (res.error || !res.data) {
+      form.saving = false;
+      form.error = "Not saved: " + (res.error ? res.error.message : "unknown error");
+      render();
+      return;
+    }
+    state.kdForm = null;
+    state.keyDates = state.keyDates.concat([res.data]);
+    render();
+  }
+
+  async function saveKeyEdit() {
+    var form = state.kdEdit;
+    if (!form || form.saving) return;
+    var k = keyById(form.id);
+    if (!k) { state.kdEdit = null; render(); return; }
+    form.error = keyProblem(form);
+    if (form.error) { render(); focusForm("kd-error"); return; }
+    var changes = keyRow(form);
+    var target = form.about === "" ? null : projectById(form.about);
+    if (form.about !== "" && !target) return;
+    changes.project_id = target ? target.id : null;
+    if (target) changes.space = target.space;
+    state.kdEdit = null;
+    await saveKey(k.id, changes);
+  }
+
+  function focusForm(cls) {
+    var node = onPage(".kd-form ." + cls);
+    if (node) node.scrollIntoView({ block: "nearest" });
+  }
+
+  // The form for a new key date (k is null) or for editing one. `form` is state.kdForm or state.kdEdit; it keeps what you typed.
+  function keyForm(form, page, k) {
+    var adding = !k;
+    var pre = adding ? "kd-" : "ke-";
+    var box = el("form", "change-add kd-form");
+    box.noValidate = true;
+    box.autocomplete = "off";
+    if (!adding) box.setAttribute("data-keydate", k.id);
+    var field = function (parent, id, text, control) {
+      var wrap = el("div");
+      var lab = el("label", null, text);
+      lab.setAttribute("for", id);
+      control.id = id;
+      wrap.appendChild(lab);
+      wrap.appendChild(control);
+      parent.appendChild(wrap);
+      return control;
+    };
+    var dates = el("div", "td-row");
+    var date = document.createElement("input");
+    date.type = "date";
+    date.value = form.date;
+    date.addEventListener("input", function () { form.date = date.value; });
+    field(dates, pre + "date", "Date", date);
+    var last = document.createElement("input");
+    last.type = "date";
+    last.value = form.last;
+    last.addEventListener("input", function () { form.last = last.value; });
+    field(dates, pre + "last", "Last day (if there is one)", last);
+    box.appendChild(dates);
+
+    var text = document.createElement("input");
+    text.type = "text";
+    text.maxLength = 300;
+    text.value = form.text;
+    text.addEventListener("input", function () { form.text = text.value; });
+    field(box, pre + "text", "What has to happen", text);
+
+    var note = document.createElement("textarea");
+    note.rows = 2;
+    note.maxLength = 1000;
+    note.value = form.note;
+    note.addEventListener("input", function () { form.note = note.value; });
+    field(box, pre + "note", "Note (optional)", note);
+
+    var more = el("div", "td-row");
+    var warn = document.createElement("input");
+    warn.type = "number";
+    warn.min = "0";
+    warn.max = "90";
+    warn.step = "1";
+    warn.inputMode = "numeric";
+    warn.value = form.warn;
+    warn.addEventListener("input", function () { form.warn = warn.value; });
+    field(more, pre + "warn", "Warn me this many days before", warn);
+    var topics = page ? topicsOf(page) : [];
+    if (page ? topics.length : k) {
+      var about = document.createElement("select");
+      if (page) {
+        [page].concat(topics).forEach(function (x) {
+          var o = el("option", null, x === page ? page.name : "Topic: " + x.name);
+          o.value = String(x.id);
+          about.appendChild(o);
+        });
+      } else {
+        var none = el("option", null, "No project");
+        none.value = "";
+        about.appendChild(none);
+        addProjectOptions(about, k.space);
+      }
+      about.value = String(form.about);
+      about.addEventListener("change", function () { form.about = about.value; });
+      field(more, pre + "about", "About", about);
+    }
+    box.appendChild(more);
+
+    if (form.error) {
+      var err = el("p", "error kd-error", form.error);
+      err.setAttribute("role", "alert");
+      box.appendChild(err);
+    }
+    var actions = el("div", "actions");
+    var save = el("button", "primary small", form.saving ? "Saving…" : "Save");
+    save.type = "submit";
+    save.disabled = !!form.saving;
+    actions.appendChild(save);
+    actions.appendChild(button("Cancel", "btn subtle small", function () {
+      if (adding) state.kdForm = null; else state.kdEdit = null;
+      render();
+    }));
+    box.appendChild(actions);
+    box.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (adding) addKey(); else saveKeyEdit();
+    });
+    box.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !form.saving) {
+        event.preventDefault();
+        if (adding) state.kdForm = null; else state.kdEdit = null;
+        render();
+      }
+    });
+    return box;
+  }
+
+  // ----- On a project page -----
+
+  // The "Key dates" section of a project page (p), or of the Unsorted card (p is null).
+  function keyDatesSection(inside, p) {
+    inside.appendChild(label("Key dates"));
+    var mine = p ? keyDatesOf(p) : unsortedKeys();
+    var open = mine.filter(function (k) { return k.status === "open"; }).sort(byKeyDate);
+    var proposed = mine.filter(function (k) { return k.status === "proposed"; }).sort(byKeyDate);
+    var done = mine.filter(function (k) { return k.status === "done"; }).sort(function (a, b) {
+      return String(b.done_at || "") < String(a.done_at || "") ? -1 : String(b.done_at || "") > String(a.done_at || "") ? 1 : 0;
+    });
+    var list = el("div", "kd-list");
+    list.setAttribute("data-keydates", p ? p.id : "unsorted");
+    if (!open.length && !proposed.length) list.appendChild(el("p", "empty", "You have no open key dates here."));
+    open.forEach(function (k) { list.appendChild(keyLine(k, "page", p)); });
+    proposed.forEach(function (k) { list.appendChild(keyLine(k, "page", p)); });
+    inside.appendChild(list);
+    if (done.length) {
+      var id = p ? String(p.id) : "unsorted";
+      var fold = el("details", "kd-done");
+      fold.appendChild(el("summary", null, "Done (" + done.length + ")"));
+      var body = foldIn(fold);
+      done.forEach(function (k) { body.appendChild(keyLine(k, "page", p)); });
+      fold.open = !!state.kdDone[id];
+      fold.addEventListener("toggle", function () { state.kdDone[id] = fold.open; });
+      inside.appendChild(fold);
+    }
+    if (!p) return;
+    if (state.kdForm && sameId(state.kdForm.pageId, p.id)) {
+      inside.appendChild(keyForm(state.kdForm, p, null));
+    } else {
+      var row = el("p", "plan-links");
+      row.appendChild(button("Add a key date", "btn small", function () {
+        state.kdEdit = null;
+        state.kdForm = { pageId: p.id, date: "", last: "", text: "", note: "", warn: "7", about: String(p.id), error: "", saving: false };
+        render();
+        var first = onPage("#kd-date");
+        if (first) first.focus();
+      }));
+      inside.appendChild(row);
+    }
+  }
+
+  // The list at the top of the Projects tab: open key dates in the next 60 days (and those already past), across the organisation filter.
+  // Returns how many lines match.
+  function renderKeyStrip() {
+    var box = $("project-keydates");
+    box.textContent = "";
+    var limit = todayNumber() + KD_AHEAD;
+    var rows = openKeys().filter(function (k) { return dayNumber(k.on_date) <= limit; });
+    box.hidden = !rows.length && needles.length > 0;
+    var head = el("div", "tsec-head");
+    head.appendChild(el("h3", "tsec-name", "Key dates in the next " + KD_AHEAD + " days"));
+    if (rows.length) head.appendChild(el("span", "count", String(rows.length)));
+    box.appendChild(head);
+    var body = el("div", "tsec-body cv-pad");
+    if (!rows.length) {
+      body.appendChild(el("p", "empty", "You have no key dates in the next " + KD_AHEAD + " days."));
+    } else {
+      var shown = state.kdAll ? rows : rows.slice(0, KD_FIRST);
+      shown.forEach(function (k) { body.appendChild(keyLine(k, "list", null)); });
+      if (rows.length > KD_FIRST) {
+        var more = button(state.kdAll ? "Show fewer" : "Show all " + rows.length, "btn small", function () {
+          state.kdAll = !state.kdAll;
+          render();
+        });
+        more.setAttribute("aria-expanded", state.kdAll ? "true" : "false");
+        body.appendChild(more);
+      }
+    }
+    box.appendChild(body);
+    return rows.length;
+  }
+
+  // ----- On Today -----
+
+  // "Coming up": open key dates whose warning has started (and those already past), soonest first.
+  function renderCoverComing() {
+    var box = $("cv-coming");
+    var open = openKeys();
+    var rows = open.filter(keyInWindow);
+    var later = open.length - rows.length;
+    var proposed = proposedKeys();
+    box.textContent = "";
+    box.hidden = !(rows.length || later || proposed.length);
+    if (box.hidden) return 0;
+    var head = el("div", "tsec-head");
+    head.appendChild(el("h2", "tsec-name", "Coming up"));
+    var overdue = rows.filter(function (k) { return keyTone(k) === "late"; }).length;
+    if (overdue) head.appendChild(el("span", "cv-late", overdue + " late"));
+    head.appendChild(el("span", "count", String(rows.length)));
+    box.appendChild(head);
+    var body = el("div", "tsec-body cv-pad");
+    if (!rows.length) body.appendChild(el("p", "empty", "Nothing is coming up yet."));
+    rows.forEach(function (k) { body.appendChild(keyLine(k, "cover", null)); });
+    box.appendChild(body);
+    if (later || proposed.length) {
+      var foot = el("div", "cv-foot kd-foot");
+      if (later) foot.appendChild(button(later + " more later", "quiet", function () { showView("projects"); }));
+      if (proposed.length) {
+        foot.appendChild(button(proposed.length + " to confirm", "quiet", function () {
+          var first = proposed[0];
+          var owner = projectById(first.project_id);
+          if (owner) { goToProject(owner); return; }
+          state.openProject = "unsorted";
+          showView("projects");
+          reveal(onPage('[data-project="unsorted"]'));
+        }));
+      }
+      box.appendChild(foot);
+    }
+    return rows.length;
   }
 
   // ---------- Today ----------
@@ -3598,7 +4211,7 @@
   function renderToday() {
     var now = Date.now();
     renderNextUp(now);
-    return renderCoverWork() + renderCoverTasks() + renderCoverInbox() + renderCoverReview();
+    return renderCoverComing() + renderCoverWork() + renderCoverTasks() + renderCoverInbox() + renderCoverReview();
   }
 
   // ---------- Start: steps (and a draft reply) for an item or a task ----------
@@ -5070,6 +5683,9 @@
         sb.from("quick_links").select("id, space, label, url, position, created_at").order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
         sb.from("project_changes").select(CHANGE_COLS).gte("changed_on", localDay(new Date(Date.now() - CHANGE_DAYS * DAY)))
           .order("changed_on", { ascending: false }).order("created_at", { ascending: false }).limit(400),
+        sb.from("key_dates").select(KD_COLS)
+          .or('status.in.(proposed,open),and(status.eq.done,done_at.gte."' + new Date(Date.now() - KD_DONE_DAYS * DAY).toISOString() + '")')
+          .order("on_date", { ascending: true }).limit(1000),
       ]);
       var failed = results.slice(0, 9).filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -5091,6 +5707,9 @@
       // The change log is extra too.
       if (!results[11].error) state.changes = results[11].data || [];
       else if (state.view === "projects") notice("The changes could not be read: " + results[11].error.message);
+      // The key dates are extra too.
+      if (!results[12].error) state.keyDates = results[12].data || [];
+      else if (state.view === "today" || state.view === "projects") notice("The key dates could not be read: " + results[12].error.message);
       syncRunPoll();
       var items = results[0].data || [];
       state.people = await loadPeople(items);
@@ -5195,6 +5814,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "project_changes" }, function () { state.log = {}; reloadSoon(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "key_dates" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "quick_links" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "cover_reviews" }, reloadSoon)
@@ -5403,6 +6023,11 @@
         state.log = {};
         state.fix = null;
         state.addLine = null;
+        state.keyDates = [];
+        state.kdForm = null;
+        state.kdEdit = null;
+        state.kdAsk = null;
+        state.kdMore = {};
         state.openProject = null;
         syncRunPoll();
         state.sendFlow = {};
