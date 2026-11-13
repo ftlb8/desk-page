@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 31)
+   Desk design system (version 32)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -14,10 +14,17 @@
    and the organisation filter. The left edge is used for nothing else.
 
    Text: one typeface, three styles: title (600, ink), body (400), quiet (400, muted, smaller).
+   Titles are --fs-title (rows that truncate) or --fs-title-sm (rows that show everything, .row.full).
    Numbers, dates, counts and money use tabular figures.
 
    Rows (.rows > .row): [check] title and one quiet line | state | date | count | actions | chevron. A list is a CSS grid
-   and every row a subgrid, so columns line up across rows. On a phone a row stacks into two lines in the same order.
+   and every row a subgrid, so columns line up across rows. Cells line up with the top line of the row.
+   Inbox rows and task rows (.row.full, also key dates and meetings that cannot be opened) show their full title and
+   their full context line, wrapped; their rows may differ in height. Every other row truncates its title and quiet line
+   with an ellipsis, because opening the row shows the rest. State text and pills are never clipped or covered.
+   Actions have their own column (.row-acts) before the chevron: always visible, quiet (muted) until the row is hovered
+   or focused. They never overlay anything. On a phone a row stacks: title and quiet line, state and date, and the
+   actions on their own line at the bottom, right-aligned.
    Opening a row shows .fold-body under it: the same indent, background and chevron everywhere.
    Spacing 4/8/12/16/24; one radius for containers, one for controls; hairline borders; no shadows, no gradients.
    ========================================================================== */
@@ -40,6 +47,9 @@
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
   --radius: 10px;
   --radius-ctl: 6px;
+  --fs-title: 1rem;
+  --fs-title-sm: 0.9375rem;
+  --row-line: 1.4rem;
   --fs-body: 0.9375rem;
   --fs-quiet: 0.8125rem;
   /* older names, kept for the rules below */
@@ -265,26 +275,41 @@ details.sub-box { margin: 0; border-width: 1px 0 0; border-radius: 0; }
 .row { position: relative; border-left: 3px solid transparent; border-top: 1px solid var(--line); }
 .row.org { border-left-color: var(--org); }
 .rows > :first-child, .unsorted-row:first-child > .row { border-top: 0; }
-.row-head { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; min-height: 60px; padding: 8px 12px 8px 9px; }
+.row-head { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: start; min-height: 60px; padding: 8px 12px 8px 9px; }
 .row.opens > .row-head { cursor: pointer; }
 .row.opens > .row-head:hover .row-title { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
-.row-check { grid-column: chk; margin: 0 12px 0 0; }
+.row-check { grid-column: chk; margin: 0 12px 0 0; align-self: start; }
 .row-main { grid-column: main; min-width: 0; }
 .row-meta { display: contents; }
-.row-state { grid-column: state; display: flex; align-items: center; gap: 6px; max-width: 22rem; min-width: 0; overflow: hidden; }
+.row-state { grid-column: state; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; max-width: 20rem; min-width: 0; }
 .row-date { grid-column: date; text-align: right; color: var(--muted); font-size: var(--fs-quiet); }
+.row-date > * { display: inline-block; max-width: 100%; }
 .row-count { grid-column: count; text-align: right; font-size: var(--fs-body); min-width: 2ch; }
-.row-acts { grid-column: acts; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.row-acts { grid-column: acts; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .row-chev { grid-column: chev; display: flex; align-items: center; justify-content: center; width: 20px; }
+/* Every cell sits on the top line of the row: as tall as one line of the title */
+.row-state, .row-date, .row-count, .row-acts, .row-chev, .row-check { min-height: var(--row-line); }
+.row-date, .row-count { line-height: var(--row-line); }
+.row-acts { height: var(--row-line); }
 .row:not(.opens) .row-chev::before { visibility: hidden; }
-.row-state, .row-date, .row-count, .row-acts, .row-chev { margin-left: 12px; white-space: nowrap; }
+.row-state, .row-date, .row-count, .row-acts, .row-chev { margin-left: 12px; }
+.row-date, .row-count, .row-acts, .row-chev { white-space: nowrap; }
 .row-state:empty, .row-date:empty, .row-count:empty, .row-acts:empty { margin-left: 0; }
-.row-state > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.row-state > * { min-width: 0; flex: 0 1 auto; }
+.row-state > .st { overflow-wrap: anywhere; }
 .row-title {
   display: block; width: 100%; max-width: 100%; margin: 0; padding: 0; border: 0; background: none; text-align: left;
-  font-size: 1rem; font-weight: 600; line-height: 1.4; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--fs-title); font-weight: 600; line-height: var(--row-line); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .row.is-open > .row-head .row-title { white-space: normal; overflow-wrap: anywhere; }
+/* Rows that show everything (inbox, tasks, key dates, meetings that do not open): the title and the quiet line wrap */
+.row.full .row-title { font-size: var(--fs-title-sm); white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.row.full .row-sub { display: block; white-space: normal; overflow: visible; overflow-wrap: anywhere; min-height: 0; }
+.row.full .row-sub > * { display: inline; flex: none; max-width: none; overflow: visible; text-overflow: clip; white-space: normal; }
+.row.full .row-sub > :first-child:not(:last-child) { max-width: none; }
+.row.full .row-sub > * + *::before { content: none; }
+.row.full .row-sub > :not(:last-child)::after { content: "·"; display: inline; margin: 0 6px; }
+.row.full .row-sub .project-pill, .row.full .row-sub .ref { display: inline; text-align: left; overflow-wrap: anywhere; }
 button.row-title { cursor: pointer; }
 .row-sub {
   display: flex; min-width: 0; margin: 2px 0 0; min-height: 1.35em; line-height: 1.35;
@@ -302,16 +327,15 @@ button.row-title { cursor: pointer; }
 .card-count.is-zero { color: var(--muted); font-size: var(--fs-quiet); }
 .row > .fold-body { grid-column: 1 / -1; margin: 0 12px 12px 9px; }
 .rows.with-check > .row > .fold-body, .rows.with-check > .unsorted-row > .row > .fold-body { margin-left: 43px; }
-/* Actions at the right end: shown on hover or focus with a mouse; always there on touch and for the keyboard */
-@media (hover: hover) and (pointer: fine) and (min-width: 601px) {
-  .row-acts {
-    position: absolute; top: 0; bottom: 0; right: 36px; z-index: 1; margin: 0; padding: 0 4px 0 12px;
-    background: var(--surface); opacity: 0;
-  }
-  .grp-quiet .row-acts { background: var(--surface-quiet); }
-  .row-acts:empty { display: none; }
-  .row-head:hover .row-acts, .row-head:focus-within .row-acts, .row-acts:has(.later.open) { opacity: 1; }
+/* Actions have their own column at the right end, before the chevron. Always there, quiet until the row is hovered or focused.
+   They never sit on top of anything. On a phone they get their own line (see the narrow rules below). */
+@media (hover: hover) and (pointer: fine) {
+  .row-acts .btn:not(.join), .row-acts .quiet { color: var(--muted); border-color: transparent; background: transparent; }
+  .row-head:hover .row-acts .btn:not(.join), .row-head:focus-within .row-acts .btn:not(.join),
+  .row-head:hover .row-acts .quiet, .row-head:focus-within .row-acts .quiet { color: var(--ink); }
+  .row-acts .btn:not(.join):hover, .row-acts .btn:not(.join):focus-visible { border-color: var(--muted); }
 }
+.row-acts .btn, .row-acts .quiet { white-space: nowrap; }
 .row-acts .made { font-size: var(--fs-quiet); }
 .row.confirmed { border-color: var(--line); }
 
@@ -718,9 +742,9 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   .notes-list > .empty { grid-column: 1 / -1; }
 }
 
-/* ---------- Narrow lists (a phone, the tray, a narrow card): a row stacks into two lines, in the same order ---------- */
+/* ---------- Narrow lists (under 760px: a phone, the tray, a half-width list): a row stacks into two lines, in the same order ---------- */
 .rows { container-type: inline-size; }
-@container (max-width: 520px) {
+@container (max-width: 760px) {
   .row, .unsorted-row { display: block !important; }
   .row-head {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
@@ -731,16 +755,41 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   .row-chev { grid-area: chev; align-self: start; margin-top: 4px; width: 24px; }
   .row-meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
   .row-meta:not(:has(> :not(:empty))) { display: none; }
-  .row-meta > * { margin-left: 0; }
+  .row-meta > * { margin-left: 0; min-height: 0; height: auto; line-height: inherit; }
+  .row-state, .row-date { align-self: center; }
   .row-meta > :empty { display: none; }
   .row-meta > :not(:empty):first-child, .row-meta > :empty + :not(:empty) { margin-top: 4px; }
-  .row-state { max-width: 100%; flex-wrap: wrap; }
+  .row-state { max-width: 100%; }
+  .row-acts { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; }
+  .row-acts:empty { display: none; }
   .row-date { text-align: left; }
   .row > .fold-body { margin: 0 8px 8px !important; }
   .unsorted-file { padding-left: 12px; }
 }
+/* Task rows and inbox rows (.trow.full, .item-row.full) use the same two-line layout at every width, so the title and its context
+   always get the whole row and the pills, date and actions sit on the line below */
+.trow.full, .item-row.full { display: block !important; }
+.trow.full > .row-head, .item-row.full > .row-head {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "chk main chev" "chk meta chev"; align-items: center; min-height: 0;
+}
+.trow.full .row-check, .item-row.full .row-check { grid-area: chk; align-self: start; margin: 2px 12px 0 0; }
+.trow.full .row-main, .item-row.full .row-main { grid-area: main; }
+.trow.full .row-chev, .item-row.full .row-chev { grid-area: chev; align-self: start; margin-top: 4px; width: 24px; }
+.trow.full .row-meta, .item-row.full .row-meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.trow.full .row-meta:not(:has(> :not(:empty))), .item-row.full .row-meta:not(:has(> :not(:empty))) { display: none; }
+.trow.full .row-meta > *, .item-row.full .row-meta > * { margin-left: 0; min-height: 0; height: auto; line-height: inherit; }
+.trow.full .row-meta > :empty, .item-row.full .row-meta > :empty { display: none; }
+.trow.full .row-meta > :not(:empty):first-child, .item-row.full .row-meta > :not(:empty):first-child, .trow.full .row-meta > :empty + :not(:empty), .item-row.full .row-meta > :empty + :not(:empty) { margin-top: 4px; }
+.trow.full .row-state, .item-row.full .row-state { max-width: 100%; align-self: center; }
+.trow.full .row-date, .item-row.full .row-date { text-align: left; align-self: center; }
+.trow.full .row-acts, .item-row.full .row-acts { margin-left: auto; justify-content: flex-end; flex-wrap: wrap; }
+.trow.full .row-acts:empty, .item-row.full .row-acts:empty { display: none; }
+/* Below 520px the actions get their own line at the bottom of the row, right-aligned */
+@container (max-width: 520px) {
+  .row-acts { flex: 1 1 100%; margin-top: 4px; }
+}
 @media (max-width: 600px) {
-  .row-acts { margin-left: auto; }
   .row-acts .btn, .row-acts .quiet { min-height: 40px; }
   .note-form textarea, textarea.note-edit { font-size: 16px; }
   .note-row select { flex: 1 1 140px; font-size: 16px; min-height: 44px; }

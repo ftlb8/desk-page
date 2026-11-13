@@ -651,7 +651,7 @@
     var isOpen = !!state.openItems[item.id];
     var promise = item.lane === "commitment";
     var fyi = kind === "look";
-    var r = makeRow("article", "card item-row urgency-" + item.urgency + (fyi ? " is-quiet" : "") + (kind === "closed" || kind === "later" ? " is-quiet" : ""), item.space);
+    var r = makeRow("article", "card item-row full urgency-" + item.urgency + (fyi ? " is-quiet" : "") + (kind === "closed" || kind === "later" ? " is-quiet" : ""), item.space);
     var node = r.node;
     node.setAttribute("data-item", item.id);
     var title = button(item.title, "title row-title", function () {});
@@ -674,6 +674,8 @@
     }
     if (kind === "commit" && item.theme) sub.push(el("span", "theme-text", item.theme));
     sub.push(el("span", "meta", meta));
+    // The gist, so the row gives its context without a click (opening the row shows it in full)
+    if (item.summary && !isOpen) sub.push(el("span", "item-gist", item.summary));
     rowSub(r, sub);
 
     // State: what needs you is loud; FYI, later and closed are quiet.
@@ -1289,7 +1291,8 @@
     if (join && !ended) r.acts.appendChild(linkTo(join, "Join", "btn small join"));
 
     var hasMore = !!(m.brief || owed.length || cal || (join && ended));
-    if (!hasMore) return node;
+    // A meeting that does not open shows its whole title
+    if (!hasMore) { node.classList.add("full"); return node; }
     rowOpens(r, title, isOpen, function () {
       if (state.openMeetings[m.id]) delete state.openMeetings[m.id]; else state.openMeetings[m.id] = true;
       var fresh = meetingCard(m, Date.now());
@@ -2394,7 +2397,7 @@
   // The first line of the background, for the one muted line under the pills.
   function why(task) {
     var lines = String(task.context || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
-    return lines.length ? lines[0].slice(0, 300) : "";
+    return lines.length ? lines[0] : "";
   }
 
   // The source line ("From: ...") shared by the task dialog and the open task. False when the item is gone.
@@ -2528,7 +2531,7 @@
   function taskRow(task, where) {
     var isOpen = !!state.openTasks[task.id];
     var open = task.status === "open";
-    var r = makeRow("div", "trow" + (task.status === "done" ? " is-done is-quiet" : "") + (task.urgent && open ? " is-urgent" : ""), task.space);
+    var r = makeRow("div", "trow full" + (task.status === "done" ? " is-done is-quiet" : "") + (task.urgent && open ? " is-urgent" : ""), task.space);
     var row = r.node;
     row.setAttribute("data-task", task.id);
     var tick = document.createElement("input");
@@ -3798,7 +3801,7 @@
     if (where === "page" && state.kdEdit && sameId(state.kdEdit.id, k.id)) return keyForm(state.kdEdit, page, k);
     var open = k.status === "open";
     var tone = open ? keyTone(k) : "plain";
-    var r = makeRow("div", "kd-line kd-" + tone + (open ? "" : " is-quiet"), k.space);
+    var r = makeRow("div", "kd-line full kd-" + tone + (open ? "" : " is-quiet"), k.space);
     var line = r.node;
     line.setAttribute("data-keydate", k.id);
     r.main.appendChild(el("p", "kd-text row-title", String(k.text || "")));
