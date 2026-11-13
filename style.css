@@ -339,7 +339,40 @@ details.earlier .card { opacity: 0.8; }
 .card.meeting .message .gist { margin-top: 6px; }
 .card.meeting .message .owed { margin-top: 10px; padding-top: 0; border-top: 0; }
 
-/* Planning */
+/* Projects */
+.project-changes { margin-bottom: 18px; }
+.project-changes .tsec-head .meta { font-weight: 400; }
+.change-line { padding: 8px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: start; }
+.change-line:first-child { border-top: 0; }
+.change-head { grid-column: 1 / -1; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 0.85rem; }
+.change-head:empty { display: none; }
+.change-body { margin: 0; font-size: 0.95rem; overflow-wrap: anywhere; min-width: 0; }
+.change-correct { justify-self: end; min-height: 32px; }
+.change-fix { grid-column: 1 / -1; }
+.change-fix textarea, .change-add textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.change-fix .actions, .change-add .actions { margin-top: 6px; }
+.change-add { margin-top: 10px; }
+.change-add select, .change-add input { width: 100%; box-sizing: border-box; }
+.pill-yours { color: var(--accent); border-color: var(--accent); font-weight: 650; }
+.topic-chips { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.topic-chip { display: inline-block; padding: 0 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); font-size: 0.78rem; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.changed-line.is-today { color: var(--accent); font-weight: 650; }
+.card.proj .card-count { font-weight: 600; color: var(--ink); }
+.proj-sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+.proj-sub h4 { margin: 0; font-size: 0.92rem; }
+.proj-tasks .trow { margin-top: 6px; }
+.topic-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.topic-row:first-of-type { border-top: 0; }
+.topic-main { flex: 1; min-width: 0; }
+.topic-name { margin: 0; overflow-wrap: anywhere; }
+.topic-standing { margin: 2px 0 0; font-size: 0.9rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-fields .reason { overflow-wrap: anywhere; }
+.unsorted-row { margin-top: 8px; }
+.unsorted-file { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding-left: 4px; }
+.unsorted-file select { flex: 1; min-width: 0; min-height: 40px; font: inherit; }
+.fold-body .primary.small { padding: 6px 14px; }
+
+/* Planning (the parts the project page still uses) */
 .clamp { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .card.plan .reason { margin-top: 2px; overflow-wrap: anywhere; }
 .card.plan .message .gist { margin-top: 6px; }
@@ -462,8 +495,8 @@ textarea.note-edit { margin-top: 8px; }
   .tasks-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 0 28px; align-items: start; }
   .tasks-main { grid-column: 1; grid-row: 1; min-width: 0; }
   .tasks-side { grid-column: 2; grid-row: 1; min-width: 0; }
-  #list-plans { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
-  #list-plans > .empty { grid-column: 1 / -1; }
+  #list-plans, #list-areas, #list-unsorted { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  .list > .card.is-open { grid-column: 1 / -1; }
   .meet-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 28px; align-items: start; }
   .day-none { display: block; }
   .day-none .empty { margin-top: 8px; }
@@ -682,3 +715,4 @@ a.link-tile:hover { border-color: var(--muted); border-left-color: var(--accent)
   .link-tile.editing .btn { min-height: 40px; }
 }
 .trow.is-urgent .fold-body.task-open { border-left-color: var(--late); }
+.proj-sub .quiet, .topic-row .btn, .change-correct { min-height: 36px; }

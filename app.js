@@ -23,7 +23,7 @@
     { id: "inbox", label: "Inbox" },
     { id: "tasks", label: "Tasks" },
     { id: "work", label: "Work" },
-    { id: "planning", label: "Planning" },
+    { id: "projects", label: "Projects" },
     { id: "meetings", label: "Meetings" },
     { id: "notes", label: "Notes" },
     { id: "links", label: "Links" },
@@ -56,7 +56,12 @@
     noteSpace: null,  // the organisation you last saved a note for in this session
     openInbox: {},    // inbox sections you closed (false) or opened (true); all start open
     openMeetings: {}, // ids of meetings whose details you opened
-    openPlans: {},    // ids of plans whose details you opened
+    openProject: null, // the project whose page is open on the Projects tab ("unsorted" for the Unsorted card)
+    changes: [],      // the change log of the last 14 days
+    changesAll: false, // "Show all" is on in the What changed strip
+    log: {},          // project id -> { rows, loading, error }: the whole log of a project, loaded when its page is first opened
+    fix: null,        // { id, where, text, error } while a change line is being corrected
+    addLine: null,    // { pageId, projectId, date, text, error, saving } while a line is being added
     openTasks: {},    // ids of tasks you expanded in the list
     openSections: { today: true, week: true, weeks: false, later: false }, // task sections you opened or closed
     folds: {},        // the fixed folds (tray, Later, Closed, Decisions, ...) you opened
@@ -90,7 +95,7 @@
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
     filter: readPref("desk.space", "all"),
-    view: "today", // the page always opens on Today; today | inbox | tasks | work | planning | meetings | notes | links
+    view: "today", // the page always opens on Today; today | inbox | tasks | work | projects | meetings | notes | links
     taskMode: readPref("desk.task-mode", "list"), // list | days
     project: null, // show only this project's tasks
     seen: null,   // ids already shown, to tell which waiting items are new
@@ -757,10 +762,10 @@
     return shown;
   }
 
-  // Which view an item lives in: suggested tasks in Tasks, decisions in Planning, the rest in Inbox.
+  // Which view an item lives in: suggested tasks in Tasks, decisions in Projects, the rest in Inbox.
   function viewFor(item) {
     if (item.lane !== "commitment") return "inbox";
-    return item.kind === "decision" ? "planning" : "tasks";
+    return item.kind === "decision" ? "projects" : "tasks";
   }
 
   // The folds that are part of the page itself. Your choice is remembered; while a search is on,
@@ -799,7 +804,7 @@
       groups[b].push(item);
     });
     var waitingCount = groups.waiting.length; // the tab count ignores the search
-    // Later and Closed follow the section: suggestions in Tasks, decisions in Planning, everything else in Inbox.
+    // Later and Closed follow the section: suggestions in Tasks, decisions in Projects, everything else in Inbox.
     ["later", "closed"].forEach(function (k) {
       groups[k] = groups[k].filter(function (item) { return viewFor(item) === state.view; });
     });
@@ -827,7 +832,7 @@
     fill("list-closed-sug", "n-closed-sug", inTasks ? groups.closed : [], "closed", null);
     $("box-later-sug").hidden = !(inTasks && groups.later.length);
     $("box-closed-sug").hidden = !(inTasks && groups.closed.length);
-    var planRows = renderPlanning();
+    var planRows = renderProjects();
     var meetingCards = renderMeetings();
     var noteRows = renderNotes();
     var todayRows = renderToday();
@@ -842,7 +847,7 @@
     if (state.view === "today") found += todayRows;
     else if (state.view === "inbox") found += inboxRows;
     else if (state.view === "tasks") found += groups.commit.length + taskRows;
-    else if (state.view === "planning") found += groups.decision.length + planRows;
+    else if (state.view === "projects") found += groups.decision.length + planRows;
     else if (state.view === "notes") found += noteRows;
     else if (state.view === "work") found += workRows;
     else if (state.view === "links") found += linkRows;
@@ -1011,16 +1016,17 @@
     setTimeout(function () { node.classList.remove("flash"); }, 2200);
   }
 
-  // Opens Planning with this plan's Details open.
-  function goToPlan(plan) {
+  // Opens the Projects tab with this project's page open (a topic opens the project it belongs to).
+  function goToProject(project) {
+    var plan = parentOf(project) || project;
     clearSearch();
     if (state.filter !== "all" && state.filter !== plan.space) {
       state.filter = "all";
       writePref("desk.space", "all");
     }
-    state.openPlans[plan.id] = true;
-    showView("planning");
-    reveal(onPage('[data-plan="' + plan.id + '"]'));
+    state.openProject = plan.id;
+    showView("projects");
+    reveal(onPage('[data-project="' + plan.id + '"]'));
   }
 
   // Opens Meetings with this meeting's card in view.
@@ -1191,7 +1197,7 @@
     return cardsShown;
   }
 
-  // ---------- Planning ----------
+  // ---------- Projects ----------
 
   var STAGES = [
     { id: "in_progress", label: "In progress" },
@@ -1201,6 +1207,10 @@
     { id: "paused", label: "Paused" },
     { id: "done", label: "Done" },
   ];
+  var CHANGE_COLS = "id, project_id, space, changed_on, text, source_label, source_url, origin, created_at";
+  var CHANGE_DAYS = 14;   // how far back the page loads changes
+  var STRIP_DAYS = 3;     // the "What changed" strip looks at today and the two days before
+  var STRIP_FIRST = 5;    // lines shown before "Show all"
 
   function stageOf(p) {
     return STAGES.some(function (s) { return s.id === p.stage; }) ? p.stage : "idea";
@@ -1210,13 +1220,60 @@
     return STAGES.filter(function (s) { return s.id === stageOf(p); })[0].label;
   }
 
-  function stageRank(p) {
-    for (var i = 0; i < STAGES.length; i++) if (STAGES[i].id === stageOf(p)) return i;
-    return STAGES.length;
+  function sameId(a, b) {
+    return a !== null && a !== undefined && b !== null && b !== undefined && String(a) === String(b);
+  }
+
+  function byName(a, b) {
+    var x = String(a.name).toLowerCase();
+    var y = String(b.name).toLowerCase();
+    return x < y ? -1 : x > y ? 1 : 0;
+  }
+
+  function isTopLevel(p) { return p.parent_id === null || p.parent_id === undefined; }
+  function isArea(p) { return p.kind === "area"; }
+  function parentOf(p) { return isTopLevel(p) ? null : projectById(p.parent_id); }
+
+  function topicsOf(p) {
+    return state.projects.filter(function (x) { return sameId(x.parent_id, p.id); }).sort(byName);
+  }
+
+  // "Parent › Topic" for a topic, the plain name for anything else.
+  function projectLabel(p) {
+    var up = parentOf(p);
+    return up ? up.name + " › " + p.name : p.name;
+  }
+
+  // The project itself and its topics.
+  function familyIds(p) {
+    return [p.id].concat(topicsOf(p).map(function (t) { return t.id; }));
+  }
+
+  function inFamily(p, id) {
+    return familyIds(p).some(function (x) { return sameId(x, id); });
   }
 
   function openTasksOf(p) {
-    return state.tasks.filter(function (t) { return t.project_id === p.id && t.status === "open"; });
+    var ids = familyIds(p);
+    return state.tasks.filter(function (t) {
+      return t.status === "open" && ids.some(function (id) { return sameId(id, t.project_id); });
+    });
+  }
+
+  function ownTasksOf(p) {
+    return state.tasks.filter(function (t) { return t.status === "open" && sameId(t.project_id, p.id); });
+  }
+
+  function unsortedTasks() {
+    return state.tasks.filter(function (t) {
+      return t.status === "open" && (t.project_id === null || t.project_id === undefined) && inFilter(t);
+    });
+  }
+
+  function countText(tasks) {
+    if (!tasks.length) return "No open tasks";
+    var urgent = tasks.filter(function (t) { return t.urgent; }).length;
+    return tasks.length + (tasks.length === 1 ? " open task" : " open tasks") + (urgent ? " · " + urgent + " urgent" : "");
   }
 
   function planDate(day) {
@@ -1230,11 +1287,18 @@
     return d.getDate() + " " + d.toLocaleDateString([], { month: "short" });
   }
 
+  // A change's day ("2026-11-12") for a line: "12 Nov", with the year when it is not this year.
+  function changeDate(day) {
+    var d = new Date(day + "T12:00:00");
+    if (isNaN(d.getTime())) return "";
+    return shortDate(d) + (d.getFullYear() !== new Date().getFullYear() ? " " + d.getFullYear() : "");
+  }
+
   function suggestionKey(p, text) {
     return p.id + "\n" + String(text).trim().toLowerCase();
   }
 
-  // The review's suggested tasks, without the ones already a task on this plan or already added this session.
+  // The review's suggested tasks, without the ones already a task on this project or already added this session.
   function openSuggestions(p, review, open) {
     var have = {};
     open.forEach(function (t) { have[String(t.title).trim().toLowerCase()] = true; });
@@ -1245,12 +1309,13 @@
   function suggestTask(p, text) {
     var task = blankTask(p.space, text);
     task.project = p.name;
+    task.project_id = p.id;
     task.context = "Suggested by the review of " + p.name;
     task.fromReview = suggestionKey(p, text);
     showDialog(task, null);
   }
 
-  // Asks Claude to look at the plan again. Takes up to a minute; the rest of the page stays usable.
+  // Asks Claude to look at the project again. Takes up to a minute; the rest of the page stays usable.
   async function reviewPlan(p) {
     if (state.reviewing[p.id]) return;
     state.reviewing[p.id] = true;
@@ -1265,7 +1330,7 @@
         now.standing = res.data.plan.standing || null;
         now.review = res.data.plan.review || {};
         now.reviewed_at = res.data.plan.reviewed_at || null;
-        state.openPlans[p.id] = true;
+        state.openProject = p.id;
         notice("");
       }
     } catch (_) {
@@ -1275,99 +1340,468 @@
     render();
   }
 
-  function planCard(p) {
-    var node = el("article", "card plan");
-    node.setAttribute("data-plan", p.id);
-    var top = el("div", "card-top");
-    top.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
-    top.appendChild(el("span", "kind", stageLabel(p)));
-    node.appendChild(top);
-    node.appendChild(el("h3", "title", p.name));
-    var preview = null;
-    if (p.what) {
-      preview = el("p", "gist clamp", p.what);
-      preview.hidden = !!state.openPlans[p.id]; // the fold shows the full text
-      node.appendChild(preview);
+  // ----- The change log -----
+  // The text, the source label and the change itself are partly written by a model from other people's content:
+  // plain text only, and a source is a link only when its address passes the https check.
+
+  function newestChange(a, b) {
+    if (a.changed_on !== b.changed_on) return a.changed_on > b.changed_on ? -1 : 1;
+    var x = String(a.created_at || ""), y = String(b.created_at || "");
+    return x === y ? 0 : x > y ? -1 : 1;
+  }
+
+  // Every change the page knows for a project and its topics (the last 14 days, and its whole log once opened).
+  function knownChanges(p) {
+    var ids = familyIds(p);
+    var seen = {};
+    var out = [];
+    var entry = state.log[p.id];
+    (state.changes || []).concat(entry ? entry.rows : []).forEach(function (c) {
+      if (seen[c.id] || !ids.some(function (id) { return sameId(id, c.project_id); })) return;
+      seen[c.id] = true;
+      out.push(c);
+    });
+    return out.sort(newestChange);
+  }
+
+  function patchChange(id, changes) {
+    var all = (state.changes || []).slice();
+    Object.keys(state.log).forEach(function (k) { all = all.concat(state.log[k].rows); });
+    all.forEach(function (c) { if (sameId(c.id, id)) Object.keys(changes).forEach(function (f) { c[f] = changes[f]; }); });
+  }
+
+  // Loads a project's whole log (it and its topics) the first time its page is opened.
+  async function fetchLog(p) {
+    var entry = state.log[p.id];
+    entry.loading = true;
+    entry.error = null;
+    try {
+      var res = await sb.from("project_changes").select(CHANGE_COLS).in("project_id", familyIds(p))
+        .order("changed_on", { ascending: false }).order("created_at", { ascending: false }).limit(200);
+      if (res.error) throw new Error(res.error.message);
+      entry.rows = res.data || [];
+    } catch (err) {
+      entry.error = err && err.message ? err.message : "unknown error";
     }
+    entry.loading = false;
+    render();
+  }
+
+  function ensureLog(p) {
+    if (state.log[p.id]) return;
+    state.log[p.id] = { rows: [], loading: true, error: null };
+    fetchLog(p);
+  }
+
+  async function saveFix() {
+    var fix = state.fix;
+    if (!fix) return;
+    var text = String(fix.text || "").trim();
+    if (!text) { fix.error = "Write the corrected text first."; render(); return; }
+    state.fix = null;
+    patchChange(fix.id, { text: text, origin: "you" });
+    render();
+    var res = await sb.from("project_changes").update({ text: text, origin: "you" }).eq("id", fix.id);
+    if (res.error) {
+      notice("That did not save: " + res.error.message);
+      state.log = {};
+    }
+    await load();
+  }
+
+  function fixForm(c, where) {
+    var form = el("form", "change-fix");
+    var ta = document.createElement("textarea");
+    ta.className = "fix-text";
+    ta.rows = 2;
+    ta.maxLength = 2000;
+    ta.value = state.fix.text;
+    ta.setAttribute("aria-label", "Corrected text");
+    ta.addEventListener("input", function () { state.fix.text = ta.value; });
+    ta.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { event.preventDefault(); state.fix = null; render(); }
+    });
+    form.appendChild(ta);
+    if (state.fix.error) form.appendChild(el("p", "error", state.fix.error));
+    var row = el("div", "actions");
+    var save = el("button", "primary small", "Save");
+    save.type = "submit";
+    row.appendChild(save);
+    row.appendChild(button("Cancel", "btn subtle small", function () { state.fix = null; render(); }));
+    form.appendChild(row);
+    form.addEventListener("submit", function (event) { event.preventDefault(); saveFix(); });
+    return form;
+  }
+
+  // One line of the change log: where it happened, the words, the source and Correct.
+  // `page` is the project whose page it sits on; null in the strip, which names the project instead.
+  function changeLine(c, where, page) {
+    var line = el("div", "change-line" + (c.origin === "you" ? " is-yours" : ""));
+    line.setAttribute("data-change", c.id);
+    var head = el("p", "change-head");
+    if (where === "log") head.appendChild(el("span", "meta change-date", changeDate(c.changed_on)));
+    var owner = projectById(c.project_id);
+    if (!page && owner) head.appendChild(el("strong", "change-project", projectLabel(owner)));
+    if (page && owner && !sameId(owner.id, page.id)) head.appendChild(el("span", "topic-chip", owner.name));
+    if (c.origin === "you") head.appendChild(el("span", "pill pill-yours", "yours"));
+    line.appendChild(head);
+    var editing = state.fix && sameId(state.fix.id, c.id) && state.fix.where === where;
+    if (editing) {
+      line.appendChild(fixForm(c, where));
+      return line;
+    }
+    var body = el("p", "change-body");
+    body.appendChild(el("span", "change-text", String(c.text || "")));
+    var href = httpsLink(c.source_url);
+    if (href) {
+      body.appendChild(document.createTextNode(" "));
+      body.appendChild(linkTo(href, (c.source_label ? String(c.source_label) : F.host(href)) + " ↗", "chip"));
+    } else if (c.source_label) {
+      body.appendChild(el("span", "fine change-source", " " + String(c.source_label)));
+    }
+    line.appendChild(body);
+    var fixBtn = button("Correct", "quiet change-correct", function () {
+      state.fix = { id: c.id, where: where, text: String(c.text || ""), error: "" };
+      render();
+      var ta = onPage('[data-change="' + c.id + '"] .fix-text');
+      if (ta) ta.focus();
+    });
+    fixBtn.setAttribute("aria-label", "Correct this line");
+    line.appendChild(fixBtn);
+    return line;
+  }
+
+  // "What changed": the lines of the most recent day with any, within the last three days.
+  function renderChangesStrip() {
+    var box = $("project-changes");
+    box.textContent = "";
+    var back = new Date();
+    back.setDate(back.getDate() - (STRIP_DAYS - 1));
+    var cutoff = localDay(back);
+    var rows = (state.changes || []).filter(function (c) {
+      return inFilter(c) && c.changed_on >= cutoff && projectById(c.project_id);
+    });
+    var head = el("div", "tsec-head");
+    head.appendChild(el("h3", "tsec-name", "What changed"));
+    var day = rows.reduce(function (best, c) { return c.changed_on > best ? c.changed_on : best; }, "");
+    if (day) {
+      rows = rows.filter(function (c) { return c.changed_on === day; }).sort(newestChange);
+      var dayName = day === localDay() ? "today" : day === localDay(new Date(Date.now() - DAY)) ? "yesterday" : changeDate(day);
+      head.appendChild(el("span", "meta", dayName));
+      head.appendChild(el("span", "count", String(rows.length)));
+    }
+    box.appendChild(head);
+    var body = el("div", "tsec-body cv-pad");
+    if (!rows.length) {
+      body.appendChild(el("p", "empty", "The daily update has not added anything yet."));
+    } else {
+      var shown = state.changesAll ? rows : rows.slice(0, STRIP_FIRST);
+      shown.forEach(function (c) { body.appendChild(changeLine(c, "strip", null)); });
+      if (rows.length > STRIP_FIRST) {
+        var more = button(state.changesAll ? "Show fewer" : "Show all " + rows.length, "btn small", function () {
+          state.changesAll = !state.changesAll;
+          render();
+        });
+        more.setAttribute("aria-expanded", state.changesAll ? "true" : "false");
+        body.appendChild(more);
+      }
+    }
+    box.appendChild(body);
+  }
+
+  async function addLine() {
+    var form = state.addLine;
+    if (!form) return;
+    var text = String(form.text || "").trim();
+    if (!text) { form.error = "Write what changed first."; render(); return; }
+    var target = projectById(form.projectId);
+    if (!target) return;
+    var day = form.date || localDay();
+    form.saving = true;
+    form.error = "";
+    render();
+    var res = await sb.from("project_changes")
+      .insert({ project_id: target.id, space: target.space, changed_on: day, text: text, origin: "you" })
+      .select(CHANGE_COLS).single();
+    if (res.error || !res.data) {
+      form.saving = false;
+      form.error = "Not saved: " + (res.error ? res.error.message : "unknown error");
+      render();
+      return;
+    }
+    var page = projectById(form.pageId);
+    state.addLine = null;
+    state.changes = (state.changes || []).concat([res.data]).sort(newestChange);
+    if (page && state.log[page.id]) state.log[page.id].rows = state.log[page.id].rows.concat([res.data]).sort(newestChange);
+    render();
+  }
+
+  function addLineForm(p) {
+    var form = state.addLine;
+    var box = el("form", "change-add");
+    box.setAttribute("data-add-line", p.id);
+    var row = el("div", "td-row");
+    var dateBox = el("div");
+    var dl = el("label", null, "Date");
+    dl.setAttribute("for", "al-date");
+    var date = document.createElement("input");
+    date.type = "date";
+    date.id = "al-date";
+    date.value = form.date;
+    date.addEventListener("input", function () { form.date = date.value; });
+    dateBox.appendChild(dl);
+    dateBox.appendChild(date);
+    row.appendChild(dateBox);
+    var topics = topicsOf(p);
+    if (topics.length) {
+      var whoBox = el("div");
+      var wl = el("label", null, "About");
+      wl.setAttribute("for", "al-topic");
+      var who = document.createElement("select");
+      who.id = "al-topic";
+      [p].concat(topics).forEach(function (x) {
+        var o = el("option", null, x === p ? p.name : "Topic: " + x.name);
+        o.value = String(x.id);
+        who.appendChild(o);
+      });
+      who.value = String(form.projectId);
+      who.addEventListener("change", function () { form.projectId = who.value; });
+      whoBox.appendChild(wl);
+      whoBox.appendChild(who);
+      row.appendChild(whoBox);
+    }
+    box.appendChild(row);
+    var tl = el("label", null, "What changed");
+    tl.setAttribute("for", "al-text");
+    box.appendChild(tl);
+    var ta = document.createElement("textarea");
+    ta.id = "al-text";
+    ta.rows = 2;
+    ta.maxLength = 2000;
+    ta.value = form.text;
+    ta.addEventListener("input", function () { form.text = ta.value; });
+    box.appendChild(ta);
+    if (form.error) box.appendChild(el("p", "error", form.error));
+    var actions = el("div", "actions");
+    var save = el("button", "primary small", form.saving ? "Saving…" : "Save");
+    save.type = "submit";
+    save.disabled = !!form.saving;
+    actions.appendChild(save);
+    actions.appendChild(button("Cancel", "btn subtle small", function () { state.addLine = null; render(); }));
+    box.appendChild(actions);
+    box.addEventListener("submit", function (event) { event.preventDefault(); if (!form.saving) addLine(); });
+    return box;
+  }
+
+  function changeLog(inside, p) {
+    inside.appendChild(label("Change log"));
+    var entry = state.log[p.id];
+    if (!entry || entry.loading) {
+      inside.appendChild(el("p", "fine", "Loading the change log…"));
+    } else if (entry.error) {
+      var bad = el("p", "error", "The change log could not be read: " + entry.error + " ");
+      bad.appendChild(button("Try again", "btn small", function () { fetchLog(p); render(); }));
+      inside.appendChild(bad);
+    }
+    if (entry && !entry.loading && !entry.error) {
+      var rows = knownChanges(p);
+      if (!rows.length) inside.appendChild(el("p", "empty", "Nothing is logged for this yet."));
+      var list = el("div", "change-log");
+      rows.forEach(function (c) { list.appendChild(changeLine(c, "log", p)); });
+      inside.appendChild(list);
+    }
+    if (state.addLine && sameId(state.addLine.pageId, p.id)) {
+      inside.appendChild(addLineForm(p));
+    } else {
+      inside.appendChild(button("Add a line", "btn small", function () {
+        state.addLine = { pageId: p.id, projectId: p.id, date: localDay(), text: "", error: "", saving: false };
+        render();
+        var ta = onPage("#al-text");
+        if (ta) ta.focus();
+      }));
+    }
+  }
+
+  // ----- Cards and pages -----
+
+  function lastChangeOf(p) {
+    var rows = knownChanges(p);
+    return rows.length ? rows[0] : null;
+  }
+
+  function cardParts(p) {
+    var parts = planParts(p);
+    topicsOf(p).forEach(function (t) { parts.push(t.name, t.standing, t.what); });
+    knownChanges(p).forEach(function (c) { parts.push(c.text); });
+    return parts;
+  }
+
+  // The words written about the project; the card and the page both start from them.
+  function standingText(p) {
+    return p.standing || p.what || "";
+  }
+
+  function addTaskHere(p) {
+    var task = blankTask(p.space, "");
+    task.project = projectLabel(p);
+    task.project_id = p.id;
+    showDialog(task, null);
+  }
+
+  function taskGroup(inside, rows, name, withAdd, topic) {
+    if (name) {
+      var head = el("div", "proj-sub");
+      head.appendChild(el("h4", null, name));
+      if (withAdd) head.appendChild(button("Add a task", "quiet", function () { addTaskHere(topic); }));
+      inside.appendChild(head);
+    }
+    rows.forEach(function (t) { inside.appendChild(taskRow(t, "projects")); });
+  }
+
+  function projectPage(p, inside) {
+    var topics = topicsOf(p);
     var open = openTasksOf(p);
     var review = p.review && typeof p.review === "object" ? p.review : {};
-    if (review.attention) {
-      var warn = el("p", "reason attention");
-      warn.appendChild(el("span", "flag flag-3", "Needs attention"));
-      warn.appendChild(document.createTextNode(" " + review.attention));
-      node.appendChild(warn);
-    }
-    if (p.next_step) node.appendChild(el("p", "reason", "Next: " + p.next_step));
-    if (p.target_on) node.appendChild(el("p", "reason", "By " + planDate(p.target_on)));
-    if (p.depends_on) node.appendChild(el("p", "reason", "After: " + p.depends_on));
-    node.appendChild(el("p", "reason", open.length ? open.length + (open.length === 1 ? " open task" : " open tasks") : "No tasks yet"));
 
-    var steps = Array.isArray(review.next_steps) ? review.next_steps.filter(Boolean) : [];
-    var suggested = openSuggestions(p, review, open);
-    var sources = (Array.isArray(review.sources) ? review.sources : []).filter(function (x) { return x && x.label; });
+    // Where it stands
+    inside.appendChild(label("Where it stands"));
+    var standing = standingText(p);
+    inside.appendChild(standing ? el("p", "gist pre", standing) : el("p", "empty", "Nothing is written down yet."));
+
+    // Open now
+    inside.appendChild(label("Open now"));
+    var now = (Array.isArray(p.open_now) ? p.open_now : []).filter(function (x) { return typeof x === "string" && x.trim(); });
+    if (now.length) {
+      var ul = el("ul", "plan-steps open-now");
+      now.forEach(function (t) { ul.appendChild(el("li", null, t)); });
+      inside.appendChild(ul);
+    } else {
+      inside.appendChild(el("p", "empty", "Nothing is listed as open right now."));
+    }
+
+    // Tasks
+    inside.appendChild(label("Tasks"));
+    var tasksBox = el("div", "proj-tasks");
+    if (!open.length) tasksBox.appendChild(el("p", "empty", "You have no open tasks here."));
+    var order = function (rows) { return urgentFirst(rows.slice().sort(taskOrder)); };
+    if (!topics.length) {
+      taskGroup(tasksBox, order(open), "", false);
+    } else {
+      var own = ownTasksOf(p);
+      if (own.length) taskGroup(tasksBox, order(own), "Not in a topic", false);
+      topics.forEach(function (t) {
+        var rows = order(openTasksOf(t));
+        taskGroup(tasksBox, rows, t.name + (rows.length ? "" : " · no open tasks"), true, t);
+      });
+    }
+    inside.appendChild(tasksBox);
+    var addRow = el("p", "plan-links");
+    addRow.appendChild(button("Add a task here", "btn small", function () { addTaskHere(p); }));
+    inside.appendChild(addRow);
+
+    // Topics
+    inside.appendChild(label("Topics"));
+    if (!topics.length) inside.appendChild(el("p", "empty", "No topics yet."));
+    topics.forEach(function (t) {
+      var row = el("div", "topic-row");
+      row.setAttribute("data-topic", t.id);
+      var main = el("div", "topic-main");
+      var line = el("p", "topic-name");
+      line.appendChild(el("strong", null, t.name));
+      line.appendChild(el("span", "fine", " · " + countText(openTasksOf(t))));
+      main.appendChild(line);
+      main.appendChild(el("p", "topic-standing", standingText(t) || "No standing written yet."));
+      row.appendChild(main);
+      row.appendChild(button("Edit", "btn small subtle", function () { openPlanDialog(t, null); }));
+      inside.appendChild(row);
+    });
+
+    // The plan
+    inside.appendChild(label("The plan"));
+    var fields = el("div", "proj-fields");
+    if (p.stage) fields.appendChild(el("p", "reason", "Stage: " + stageLabel(p)));
+    if (p.what && p.standing) fields.appendChild(el("p", "gist", p.what));
+    if (p.next_step) fields.appendChild(el("p", "reason", "Next: " + p.next_step));
+    if (p.target_on) fields.appendChild(el("p", "reason", "By " + planDate(p.target_on)));
+    if (p.depends_on) fields.appendChild(el("p", "reason", "After: " + p.depends_on));
+    if (p.people) fields.appendChild(el("p", "reason", "With: " + p.people));
+    if (p.tools) fields.appendChild(el("p", "reason", "Tools: " + p.tools));
     var links = (Array.isArray(p.links) ? p.links : []).map(function (l) {
       return l && httpsLink(l.url) ? { href: httpsLink(l.url), label: l.label || F.host(httpsLink(l.url)) } : null;
     }).filter(Boolean);
-    var fold = el("details", "message");
-    fold.appendChild(el("summary", null, "Details"));
-    var inside = foldIn(fold);
-    if (p.what) inside.appendChild(el("p", "gist", p.what));
-    if (p.standing) {
-      inside.appendChild(el("p", "owed-head", "Where it stands"));
-      inside.appendChild(el("p", "gist", p.standing));
-    }
-    if (p.reviewed_at) inside.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at))));
-    if (steps.length) {
-      inside.appendChild(el("p", "owed-head", "Suggested next steps"));
-      var ul = el("ul", "plan-steps");
-      steps.forEach(function (t) { ul.appendChild(el("li", null, String(t))); });
-      inside.appendChild(ul);
-    }
-    if (suggested.length) {
-      inside.appendChild(el("p", "owed-head", "Suggested tasks"));
-      suggested.forEach(function (text) {
-        var row = el("div", "plan-suggest");
-        row.appendChild(el("span", "plan-suggest-text", text));
-        row.appendChild(button("Add as task", "btn small", function () { suggestTask(p, text); }));
-        inside.appendChild(row);
-      });
-    }
-    if (sources.length) {
-      inside.appendChild(el("p", "owed-head", "From"));
-      sources.forEach(function (x) {
-        var row = el("p", "plan-source");
-        var href = httpsLink(x.url);
-        var day = x.date ? new Date(x.date + "T12:00:00") : null;
-        var when = day && !isNaN(day.getTime()) ? " · " + shortDate(day) : "";
-        if (href) {
-          row.appendChild(linkTo(href, x.label + " ↗", "chip"));
-          if (when) row.appendChild(document.createTextNode(when));
-        } else {
-          row.appendChild(document.createTextNode(x.label + when));
-        }
-        inside.appendChild(row);
-      });
-    }
-    if (review.note) inside.appendChild(el("p", "fine", String(review.note)));
-    if (p.people) inside.appendChild(el("p", "reason", "With: " + p.people));
-    if (p.tools) inside.appendChild(el("p", "reason", "Tools: " + p.tools));
     if (links.length) {
-      var box = el("p", "plan-links");
-      links.forEach(function (l) { box.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
-      inside.appendChild(box);
+      var chips = el("p", "plan-links");
+      links.forEach(function (l) { chips.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
+      fields.appendChild(chips);
     }
-    if (open.length) {
-      inside.appendChild(el("p", "owed-head", "Open tasks"));
-      open.forEach(function (t) {
+    if (!fields.children.length) fields.appendChild(el("p", "empty", "No plan details yet. Press Edit to add them."));
+    inside.appendChild(fields);
+
+    // Decisions from your meetings that are about this project or one of its topics
+    var names = [p].concat(topics).map(function (x) { return plain(x.name); });
+    var decisions = state.items.filter(function (i) {
+      return i.lane === "commitment" && i.kind === "decision" && (i.status === "open" || i.status === "snoozed") && i.theme && names.indexOf(plain(i.theme)) >= 0;
+    });
+    if (decisions.length) {
+      inside.appendChild(label("Decisions"));
+      decisions.forEach(function (d) {
         var row = el("div", "plan-task");
-        row.appendChild(button(t.title, "ref", function () { openTask(t); }));
+        row.appendChild(button(d.title, "ref", function () { goToItem(d); }));
         inside.appendChild(row);
       });
     }
-    var planNotes = state.notes.filter(function (n) { return n.project_id === p.id; }).sort(notesNewest);
-    if (planNotes.length) {
-      inside.appendChild(el("p", "owed-head", "Notes"));
-      planNotes.slice(0, 3).forEach(function (n) {
+
+    // The review: projects only, not areas and not topics
+    if (isTopLevel(p) && !isArea(p)) {
+      inside.appendChild(label("Review"));
+      if (p.reviewed_at) inside.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at))));
+      var steps = Array.isArray(review.next_steps) ? review.next_steps.filter(Boolean) : [];
+      var suggested = openSuggestions(p, review, open);
+      var sources = (Array.isArray(review.sources) ? review.sources : []).filter(function (x) { return x && x.label; });
+      if (steps.length) {
+        inside.appendChild(label("Suggested next steps"));
+        var sl = el("ul", "plan-steps");
+        steps.forEach(function (t) { sl.appendChild(el("li", null, String(t))); });
+        inside.appendChild(sl);
+      }
+      if (suggested.length) {
+        inside.appendChild(label("Suggested tasks"));
+        suggested.forEach(function (text) {
+          var row = el("div", "plan-suggest");
+          row.appendChild(el("span", "plan-suggest-text", text));
+          row.appendChild(button("Add as task", "btn small", function () { suggestTask(p, text); }));
+          inside.appendChild(row);
+        });
+      }
+      if (sources.length) {
+        inside.appendChild(label("From"));
+        sources.forEach(function (x) {
+          var row = el("p", "plan-source");
+          var href = httpsLink(x.url);
+          var day = x.date ? new Date(x.date + "T12:00:00") : null;
+          var when = day && !isNaN(day.getTime()) ? " · " + shortDate(day) : "";
+          if (href) {
+            row.appendChild(linkTo(href, x.label + " ↗", "chip"));
+            if (when) row.appendChild(document.createTextNode(when));
+          } else {
+            row.appendChild(document.createTextNode(x.label + when));
+          }
+          inside.appendChild(row);
+        });
+      }
+      if (review.note) inside.appendChild(el("p", "fine", String(review.note)));
+      var again = button(state.reviewing[p.id] ? "Reviewing…" : "Review now", "btn small", function () { reviewPlan(p); });
+      again.disabled = !!state.reviewing[p.id];
+      var reviewRow = el("p", "plan-links");
+      reviewRow.appendChild(again);
+      inside.appendChild(reviewRow);
+    }
+
+    // Notes tied to this project
+    var projectNotes = state.notes.filter(function (n) { return sameId(n.project_id, p.id); }).sort(notesNewest);
+    if (projectNotes.length) {
+      inside.appendChild(label("Notes"));
+      projectNotes.slice(0, 3).forEach(function (n) {
         var line = el("div", "plan-note");
         line.appendChild(el("span", "meta", noteDate(n.created_at)));
         line.appendChild(el("p", "plan-note-text", firstLines(n.body)));
@@ -1377,67 +1811,193 @@
       allNotes.appendChild(button("All notes", "btn small", function () { showNotesFor(p); }));
       inside.appendChild(allNotes);
     }
-    fold.open = !!state.openPlans[p.id];
-    fold.addEventListener("toggle", function () {
-      if (fold.open) state.openPlans[p.id] = true; else delete state.openPlans[p.id];
-      if (preview) preview.hidden = fold.open;
-    });
-    node.appendChild(fold);
+
+    changeLog(inside, p);
 
     var actions = el("div", "actions");
-    actions.appendChild(button("Add task", "btn", function () {
-      var task = blankTask(p.space, "");
-      task.project = p.name;
-      showDialog(task, null);
-    }));
+    actions.appendChild(button("Edit", "btn", function () { openPlanDialog(p, null); }));
+    actions.appendChild(button("Add a topic", "btn", function () { openPlanDialog(null, p); }));
     actions.appendChild(button("See tasks", "btn", function () {
       state.project = p.id;
       showView("tasks");
     }));
-    var again = button(state.reviewing[p.id] ? "Reviewing…" : "Review now", "btn", function () { reviewPlan(p); });
-    again.disabled = !!state.reviewing[p.id];
-    actions.appendChild(again);
-    actions.appendChild(button("Edit", "btn subtle", function () { openPlanDialog(p); }));
-    node.appendChild(actions);
+    inside.appendChild(actions);
+  }
+
+  // Opens or closes a card; one project page is open at a time.
+  function toggleCard(id, fold, node) {
+    var opening = fold.open;
+    if (opening === sameId(state.openProject, id)) return;
+    state.openProject = opening ? id : null;
+    render();
+    var summary = onPage('[data-project="' + id + '"] details.message > summary');
+    if (summary) summary.focus({ preventScroll: true });
+  }
+
+  function cardFold(node, id, isOpen, build) {
+    var fold = el("details", "message");
+    fold.appendChild(el("summary", null, "Details"));
+    if (isOpen) {
+      var inside = foldIn(fold);
+      inside.classList.add("project-page");
+      build(inside);
+    }
+    fold.open = isOpen;
+    fold.addEventListener("toggle", function () { toggleCard(id, fold, node); });
+    node.appendChild(fold);
+  }
+
+  function projectCard(p) {
+    var isOpen = sameId(state.openProject, p.id);
+    var node = el("article", "card plan proj" + (isOpen ? " is-open" : ""));
+    node.setAttribute("data-project", p.id);
+    var top = el("div", "card-top");
+    top.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
+    if (!isArea(p) && p.stage) top.appendChild(el("span", "kind", stageLabel(p)));
+    node.appendChild(top);
+    node.appendChild(el("h3", "title", p.name));
+    node.appendChild(el("p", "reason card-count", countText(openTasksOf(p))));
+    var topics = topicsOf(p);
+    if (topics.length) {
+      var chips = el("p", "topic-chips");
+      topics.forEach(function (t) { chips.appendChild(el("span", "topic-chip", t.name)); });
+      node.appendChild(chips);
+    }
+    var review = p.review && typeof p.review === "object" ? p.review : {};
+    if (!isArea(p) && review.attention) {
+      var warn = el("p", "reason attention");
+      warn.appendChild(el("span", "flag flag-3", "Needs attention"));
+      warn.appendChild(document.createTextNode(" " + review.attention));
+      node.appendChild(warn);
+    }
+    var last = lastChangeOf(p);
+    if (last && last.changed_on === localDay()) {
+      node.appendChild(el("p", "reason changed-line is-today", "Changed today"));
+    } else {
+      var since = last ? changeDate(last.changed_on) : changeDate(localDay(new Date(Date.now() - CHANGE_DAYS * DAY)));
+      node.appendChild(el("p", "reason changed-line", "Quiet since " + since));
+    }
+    cardFold(node, p.id, isOpen, function (inside) { projectPage(p, inside); });
     return node;
   }
 
-  function renderPlanning() {
-    var visible = state.projects.filter(function (p) { return state.filter === "all" || p.space === state.filter; });
-    var plans = visible.filter(function (p) { return p.is_plan && hit(planParts(p)); }).sort(function (a, b) {
-      return stageRank(a) - stageRank(b) || (String(a.name).toLowerCase() < String(b.name).toLowerCase() ? -1 : 1);
+  // A project picker for filing a task: top-level rows, each followed by its topics indented.
+  function addProjectOptions(select, space) {
+    state.projects.filter(function (p) { return p.space === space && isTopLevel(p); }).sort(byName).forEach(function (p) {
+      var o = el("option", null, p.name);
+      o.value = String(p.id);
+      select.appendChild(o);
+      topicsOf(p).forEach(function (t) {
+        var to = el("option", null, "    " + t.name);
+        to.value = String(t.id);
+        select.appendChild(to);
+      });
     });
-    var list = $("list-plans");
-    list.textContent = "";
-    plans.forEach(function (p) { list.appendChild(planCard(p)); });
-    if (!plans.length && !needles.length) list.appendChild(el("p", "empty", "You have no plans here yet. Add one for anything that will take more than a single task."));
-
-    var others = visible.filter(function (p) { return !p.is_plan && hit([p.name]); });
-    var rest = $("list-projects");
-    rest.textContent = "";
-    $("box-projects").hidden = !others.length;
-    others.forEach(function (p) {
-      var row = el("div", "prow");
-      var main = el("div", "task-main");
-      main.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
-      main.appendChild(el("span", null, p.name));
-      var n = openTasksOf(p).length;
-      main.appendChild(el("span", "repeat", n ? n + (n === 1 ? " open task" : " open tasks") : "No tasks yet"));
-      row.appendChild(main);
-      row.appendChild(button("Make it a plan", "btn small", function () { makePlan(p); }));
-      rest.appendChild(row);
-    });
-    return plans.length + others.length;
   }
 
-  var editingPlan = null; // the plan in the dialog; null while adding one
+  function unsortedCard(tasks) {
+    var isOpen = sameId(state.openProject, "unsorted");
+    var node = el("article", "card plan proj unsorted" + (isOpen ? " is-open" : ""));
+    node.setAttribute("data-project", "unsorted");
+    node.appendChild(el("h3", "title", "Unsorted"));
+    node.appendChild(el("p", "reason card-count", countText(tasks)));
+    node.appendChild(el("p", "reason", "Tasks that are not in a project yet."));
+    cardFold(node, "unsorted", isOpen, function (inside) {
+      inside.appendChild(label("Tasks"));
+      urgentFirst(tasks.slice().sort(taskOrder)).forEach(function (t) {
+        var wrap = el("div", "unsorted-row");
+        wrap.setAttribute("data-unsorted", t.id);
+        wrap.appendChild(taskRow(t, "projects"));
+        var file = el("div", "unsorted-file");
+        var id = "uf-" + t.id;
+        var lab = el("label", "fine", "Project");
+        lab.setAttribute("for", id);
+        var pick = document.createElement("select");
+        pick.id = id;
+        pick.setAttribute("aria-label", "Project for " + t.title);
+        var none = el("option", null, "Choose a project…");
+        none.value = "";
+        pick.appendChild(none);
+        addProjectOptions(pick, t.space);
+        pick.value = "";
+        pick.addEventListener("change", function () {
+          var target = projectById(pick.value);
+          if (target) saveTask(t.id, { project_id: target.id });
+        });
+        file.appendChild(lab);
+        file.appendChild(pick);
+        wrap.appendChild(file);
+        inside.appendChild(wrap);
+      });
+    });
+    return node;
+  }
 
-  function openPlanDialog(p) {
+  function projectGroup(boxId, listId, cards) {
+    var list = $(listId);
+    list.textContent = "";
+    cards.forEach(function (c) { list.appendChild(c); });
+    $(boxId).hidden = !cards.length;
+  }
+
+  // Draws the Projects tab; returns how many cards it shows.
+  function renderProjects() {
+    renderChangesStrip();
+    var visible = state.projects.filter(function (p) { return isTopLevel(p) && inFilter(p) && hit(cardParts(p)); });
+    var rank = function (p) { var c = lastChangeOf(p); return c ? c.changed_on + "|" + String(c.created_at || "") : ""; };
+    var newestFirst = function (a, b) {
+      var x = rank(a), y = rank(b);
+      return x === y ? byName(a, b) : x > y ? -1 : 1;
+    };
+    var projects = visible.filter(function (p) { return !isArea(p); }).sort(newestFirst);
+    var areas = visible.filter(isArea).sort(newestFirst);
+    projectGroup("box-proj-projects", "list-plans", projects.map(projectCard));
+    projectGroup("box-proj-areas", "list-areas", areas.map(projectCard));
+    var loose = unsortedTasks();
+    if (needles.length) loose = hit(["Unsorted"].concat(loose.map(function (t) { return taskParts(t).join(" "); }))) ? loose : [];
+    projectGroup("box-proj-unsorted", "list-unsorted", loose.length ? [unsortedCard(loose)] : []);
+    var total = projects.length + areas.length + (loose.length ? 1 : 0);
+    var some = state.projects.some(function (p) { return isTopLevel(p) && inFilter(p); });
+    $("projects-empty").hidden = some || needles.length > 0 || loose.length > 0;
+    // The open page loads its change log the first time it is shown.
+    var shownOpen = projects.concat(areas).filter(function (p) { return sameId(state.openProject, p.id); })[0];
+    if (shownOpen) ensureLog(shownOpen);
+    return total;
+  }
+
+  var editingPlan = null; // the project in the dialog; null while adding one
+
+  // The "Part of" picker: the top-level rows of the organisation. A row that has topics cannot become a topic.
+  function fillParentChoices(space, self, chosen) {
+    var pick = $("pd-parent");
+    pick.textContent = "";
+    var none = el("option", null, "None (a project or area of its own)");
+    none.value = "";
+    pick.appendChild(none);
+    state.projects.filter(function (x) {
+      return x.space === space && isTopLevel(x) && !(self && sameId(x.id, self.id));
+    }).sort(byName).forEach(function (x) {
+      var o = el("option", null, x.name);
+      o.value = String(x.id);
+      pick.appendChild(o);
+    });
+    var blocked = !!self && topicsOf(self).length > 0;
+    var wanted = blocked || chosen === null || chosen === undefined ? "" : String(chosen);
+    pick.value = Array.prototype.some.call(pick.options, function (o) { return o.value === wanted; }) ? wanted : "";
+    pick.disabled = blocked;
+    $("pd-parent-note").hidden = !blocked;
+  }
+
+  function openPlanDialog(p, parent) {
     editingPlan = p || null;
-    $("pd-heading").textContent = p ? "Edit plan" : "New plan";
-    $("pd-space-box").hidden = !!p || state.filter !== "all";
-    $("pd-space").value = p ? p.space : (state.filter !== "all" ? state.filter : readPref("desk.task-space", "metaculus"));
+    var asTopic = p ? !isTopLevel(p) : !!parent;
+    $("pd-heading").textContent = p ? (asTopic ? "Edit topic" : isArea(p) ? "Edit area" : "Edit project") : parent ? "New topic" : "New project";
+    $("pd-space-box").hidden = !!p || !!parent || state.filter !== "all";
+    var space = p ? p.space : parent ? parent.space : (state.filter !== "all" ? state.filter : readPref("desk.task-space", "metaculus"));
+    $("pd-space").value = space;
     $("pd-name").value = p ? p.name : "";
+    $("pd-kind").value = p ? (isArea(p) ? "area" : "project") : parent && isArea(parent) ? "area" : "project";
+    fillParentChoices(space, p, p ? p.parent_id : parent ? parent.id : null);
     $("pd-stage").value = p ? stageOf(p) : "idea";
     $("pd-what").value = (p && p.what) || "";
     $("pd-next").value = (p && p.next_step) || "";
@@ -1457,8 +2017,12 @@
     var name = $("pd-name").value.trim();
     if (!name) return;
     var text = function (id) { return $(id).value.trim() || null; };
+    var parent = projectById($("pd-parent").value);
+    if (editingPlan && topicsOf(editingPlan).length) parent = null;
     var row = {
       name: name,
+      kind: $("pd-kind").value === "area" ? "area" : "project",
+      parent_id: parent ? parent.id : null,
       stage: $("pd-stage").value,
       what: text("pd-what"),
       next_step: text("pd-next"),
@@ -1480,7 +2044,7 @@
       return;
     }
     try {
-      row.space = $("pd-space").value;
+      row.space = parent ? parent.space : $("pd-space").value;
       row.is_plan = true;
       var made = await sb.from("projects").insert(row);
       if (made.error) throw new Error(made.error.message);
@@ -1490,16 +2054,6 @@
       return;
     }
     $("plan-dialog").close();
-    await load();
-  }
-
-  async function makePlan(p) {
-    p.is_plan = true;
-    p.updated_at = new Date().toISOString();
-    render();
-    openPlanDialog(p);
-    var res = await sb.from("projects").update({ is_plan: true, updated_at: p.updated_at }).eq("id", p.id);
-    if (res.error) notice("That did not save: " + res.error.message);
     await load();
   }
 
@@ -1513,7 +2067,10 @@
   ];
   var REPEAT_PILL = { daily: "daily", weekly: "weekly", biweekly: "every 2 weeks", monthly: "monthly" };
 
+  // The project of a task as written on its row: "Name", or "Parent \u203a Topic" for a topic.
   function projectName(task) {
+    var p = projectById(task.project_id);
+    if (p) return projectLabel(p);
     return task.projects && task.projects.name ? task.projects.name : null;
   }
 
@@ -1554,15 +2111,19 @@
     return text;
   }
 
-  function pills(task) {
+  function pills(task, where) {
     var open = task.status === "open";
     var box = el("div", "pills");
     box.appendChild(el("span", "pill tag-" + task.space, spaceLabel(task.space)));
     if (projectName(task)) {
-      box.appendChild(button(projectName(task), "pill project-pill", function () {
-        state.project = task.project_id;
-        render();
-      }));
+      if (where === "projects") {
+        box.appendChild(el("span", "pill project-pill", projectName(task)));
+      } else {
+        box.appendChild(button(projectName(task), "pill project-pill", function () {
+          state.project = task.project_id;
+          render();
+        }));
+      }
     }
     var live = open ? activeRunOf(task.id) : null;
     if (live) box.appendChild(el("span", "pill run-st-" + live.status, live.status === "needs_you" ? "Needs you" : "Working"));
@@ -1727,7 +2288,7 @@
     var title = button(task.title, "task-title", function () {});
     title.setAttribute("aria-expanded", isOpen ? "true" : "false");
     main.appendChild(title);
-    main.appendChild(pills(task));
+    main.appendChild(pills(task, where));
     var late = lateNote(task);
     if (late) main.appendChild(el("p", "trow-late", late));
     if (!isOpen && task.context) main.appendChild(el("p", "trow-why", why(task)));
@@ -1745,7 +2306,8 @@
 
     // Tapping the row opens or closes it in place. Controls inside it do their own thing.
     row.addEventListener("click", function (event) {
-      if (event.target.closest("input, a, select, .fold-body, button:not(.task-title)")) return;
+      var inner = event.target.closest("input, a, select, .fold-body, button:not(.task-title)");
+      if (inner && row.contains(inner)) return; // a control of the row itself (the row may sit inside a project page)
       if (state.openTasks[task.id]) delete state.openTasks[task.id]; else state.openTasks[task.id] = true;
       var fresh = taskRow(task, where);
       row.replaceWith(fresh);
@@ -1804,16 +2366,23 @@
     return box;
   }
 
+  // True when the task is in this project or in one of its topics.
+  function inProject(t, id) {
+    if (sameId(t.project_id, id)) return true;
+    var own = projectById(t.project_id);
+    return !!own && sameId(own.parent_id, id);
+  }
+
   // Draws the Tasks list; returns how many rows it shows.
   function renderTasks() {
     var list = $("list-tasks");
     list.textContent = "";
     var inSpace = state.tasks.filter(function (t) { return state.filter === "all" || t.space === state.filter; });
     var openInSpace = inSpace.filter(function (t) { return t.status === "open"; });
-    if (state.project && !state.projects.some(function (p) { return p.id === state.project && (state.filter === "all" || p.space === state.filter); })) {
+    if (state.project && !state.projects.some(function (p) { return sameId(p.id, state.project) && (state.filter === "all" || p.space === state.filter); })) {
       state.project = null;
     }
-    var mine = inSpace.filter(function (t) { return !state.project || t.project_id === state.project; });
+    var mine = inSpace.filter(function (t) { return !state.project || inProject(t, state.project); });
     $("n-tasks").textContent = mine.filter(function (t) { return t.status === "open"; }).length || "";
     var shown = needles.length ? mine.filter(function (t) { return hit(taskParts(t)); }) : mine;
     var open = shown.filter(function (t) { return t.status === "open"; });
@@ -1835,10 +2404,10 @@
     tools.appendChild(all);
     state.projects.forEach(function (p) {
       if (state.filter !== "all" && p.space !== state.filter) return;
-      var n = openInSpace.filter(function (t) { return t.project_id === p.id; }).length;
-      if (!n && state.project !== p.id) return;
-      tools.appendChild(button(p.name + " " + n, "project" + (state.project === p.id ? " on" : ""), function () {
-        state.project = state.project === p.id ? null : p.id;
+      var n = openInSpace.filter(function (t) { return inProject(t, p.id); }).length;
+      if (!n && !sameId(state.project, p.id)) return;
+      tools.appendChild(button(projectLabel(p) + " " + n, "project" + (sameId(state.project, p.id) ? " on" : ""), function () {
+        state.project = sameId(state.project, p.id) ? null : p.id;
         render();
       }));
     });
@@ -1910,9 +2479,9 @@
     if (!wanted) return null;
     for (var i = 0; i < state.projects.length; i++) {
       var p = state.projects[i];
-      if (p.space === space && p.name.toLowerCase() === wanted.toLowerCase()) return p.id;
+      if (p.space === space && isTopLevel(p) && p.name.toLowerCase() === wanted.toLowerCase()) return p.id;
     }
-    var made = await sb.from("projects").insert({ space: space, name: wanted }).select("id").single();
+    var made = await sb.from("projects").insert({ space: space, name: wanted, kind: "project", parent_id: null }).select("id").single();
     if (made.error) throw new Error(made.error.message);
     return made.data.id;
   }
@@ -1932,33 +2501,42 @@
 
   var draft = null; // the task shown in the dialog; id is null until it is saved
 
-  // The project picker: this organisation's projects, "No project", and "New project…".
-  // A suggested name that does not exist yet arrives selected as a new project.
-  function fillProjectChoices(space, chosen) {
+  // The project picker: this organisation's projects with their topics indented beneath, "No project", and "New project…".
+  // A task can be saved without a project (it lands in Unsorted). A suggested name that does not exist yet arrives
+  // selected as a new project.
+  function fillProjectChoices(space, chosen, chosenId) {
     var pick = $("td-project");
     var fresh = $("td-project-new");
     pick.textContent = "";
-    var add = function (value, label) {
-      var o = el("option", null, label);
-      o.value = value;
-      pick.appendChild(o);
-    };
-    add("", "No project");
-    var match = "";
-    state.projects.forEach(function (p) {
-      if (p.space !== space) return;
-      add(p.name, p.name);
-      if (chosen && p.name.toLowerCase() === String(chosen).toLowerCase()) match = p.name;
-    });
-    add("__new__", "New project…");
-    var isNew = !!chosen && !match;
-    pick.value = isNew ? "__new__" : match;
+    var none = el("option", null, "No project");
+    none.value = "";
+    pick.appendChild(none);
+    addProjectOptions(pick, space);
+    var wanted = "";
+    var byId = chosenId !== null && chosenId !== undefined ? projectById(chosenId) : null;
+    if (byId && byId.space === space) {
+      wanted = String(byId.id);
+    } else if (chosen) {
+      var low = String(chosen).toLowerCase();
+      var found = state.projects.filter(function (p) { return p.space === space && isTopLevel(p) && p.name.toLowerCase() === low; })[0] ||
+        state.projects.filter(function (p) { return p.space === space && (p.name.toLowerCase() === low || projectLabel(p).toLowerCase() === low); })[0];
+      if (found) wanted = String(found.id);
+    }
+    var newOpt = el("option", null, "New project…");
+    newOpt.value = "__new__";
+    pick.appendChild(newOpt);
+    var isNew = !wanted && !!chosen;
+    pick.value = isNew ? "__new__" : wanted;
     fresh.value = isNew ? chosen : "";
     fresh.hidden = !isNew;
   }
 
-  function chosenProject() {
-    return $("td-project").value === "__new__" ? $("td-project-new").value : $("td-project").value;
+  // The project the form stands on: an id, or the name of a project to create, or nothing.
+  async function chosenProjectId(space) {
+    var v = $("td-project").value;
+    if (v === "__new__") return await projectId(space, $("td-project-new").value);
+    var p = v ? projectById(v) : null;
+    return p ? p.id : null;
   }
 
   function drawLinks() {
@@ -2034,7 +2612,7 @@
     $("td-link-url").value = "";
     $("td-error").hidden = true;
     $("td-step-text").value = "";
-    fillProjectChoices(task.space, task.project || "");
+    fillProjectChoices(task.space, task.project || "", task.project_id);
     drawLinks();
     drawSteps();
     drawRelated();
@@ -2049,7 +2627,7 @@
 
   function openTask(task) {
     showDialog({
-      id: task.id, status: task.status, space: task.space, title: task.title, project: projectName(task) || "",
+      id: task.id, status: task.status, space: task.space, title: task.title, project: "", project_id: task.project_id === undefined ? null : task.project_id,
       horizon: task.horizon, urgent: !!task.urgent, due_on: task.due_on, repeat: task.repeat, context: task.context, notes: task.notes,
       links: Array.isArray(task.links) ? task.links.slice() : [], source_item_id: task.source_item_id,
       steps: (Array.isArray(task.steps) ? task.steps : []).map(function (x) { return { text: String(x.text || ""), done: !!x.done }; }),
@@ -2058,7 +2636,7 @@
   }
 
   function blankTask(space, title) {
-    return { id: null, status: "open", space: space, title: title || "", project: "", horizon: "week", urgent: false, due_on: null, repeat: null, context: "", notes: "", links: [], steps: [], related: [], source_item_id: null };
+    return { id: null, status: "open", space: space, title: title || "", project: "", project_id: null, horizon: "week", urgent: false, due_on: null, repeat: null, context: "", notes: "", links: [], steps: [], related: [], source_item_id: null };
   }
 
   function withSuggestion(task, s) {
@@ -2066,6 +2644,7 @@
     task.title = s.title || task.title;
     task.space = s.space || task.space;
     task.project = s.project || "";
+    task.project_id = null;
     task.horizon = s.horizon || task.horizon;
     task.due_on = s.due_on || task.due_on;
     task.repeat = s.repeat || null;
@@ -2123,7 +2702,7 @@
       var row = {
         space: space,
         title: title,
-        project_id: await projectId(space, chosenProject()),
+        project_id: await chosenProjectId(space),
         horizon: $("td-horizon").value,
         urgent: $("td-urgent").checked,
         due_on: $("td-due").value || null,
@@ -2195,7 +2774,7 @@
       if (!!a.is_plan !== !!b.is_plan) return a.is_plan ? -1 : 1;
       return String(a.name).toLowerCase() < String(b.name).toLowerCase() ? -1 : 1;
     }).forEach(function (p) {
-      var o = el("option", null, p.name);
+      var o = el("option", null, projectLabel(p));
       o.value = String(p.id);
       select.appendChild(o);
     });
@@ -2324,7 +2903,7 @@
     var top = el("div", "card-top");
     top.appendChild(el("span", "tag tag-" + n.space, spaceLabel(n.space)));
     var plan = projectById(n.project_id);
-    if (plan) top.appendChild(el("span", "kind", plan.name));
+    if (plan) top.appendChild(el("span", "kind", projectLabel(plan)));
     top.appendChild(el("span", "meta", noteDate(n.created_at)));
     if (n.pinned) top.appendChild(el("span", "flag pin-flag", "Pinned"));
     return top;
@@ -2931,7 +3510,7 @@
     }
     if (ref.kind === "plan") {
       var plan = state.projects.filter(same)[0];
-      return plan && plan.is_plan ? function () { goToPlan(plan); } : null;
+      return plan ? function () { goToProject(plan); } : null;
     }
     if (ref.kind === "meeting") {
       var meeting = state.meetings.filter(same)[0];
@@ -4473,7 +5052,7 @@
           .or('status.eq.open,and(status.eq.done,done_at.gte."' + since + '")')
           .order("created_at", { ascending: true })
           .limit(1000),
-        sb.from("projects").select("id, space, name, is_plan, what, stage, depends_on, next_step, target_on, people, tools, links, standing, review, reviewed_at, updated_at").eq("status", "active").order("name").limit(1000),
+        sb.from("projects").select("id, space, name, kind, parent_id, open_now, is_plan, what, stage, depends_on, next_step, target_on, people, tools, links, standing, review, reviewed_at, updated_at").eq("status", "active").order("name").limit(1000),
         // From the start of today (a little earlier, so all-day events dated in another time zone are not missed).
         sb.from("meetings")
           .select("id, space, event_id, title, starts_at, ends_at, all_day, status, my_response, join_url, event_url, location, organizer, attendees, recurring_event_id, brief, owed")
@@ -4489,6 +5068,8 @@
         sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at"),
         sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50),
         sb.from("quick_links").select("id, space, label, url, position, created_at").order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
+        sb.from("project_changes").select(CHANGE_COLS).gte("changed_on", localDay(new Date(Date.now() - CHANGE_DAYS * DAY)))
+          .order("changed_on", { ascending: false }).order("created_at", { ascending: false }).limit(400),
       ]);
       var failed = results.slice(0, 9).filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -4507,6 +5088,9 @@
       // The links are extra too: if they cannot be read the rest of the Desk still loads.
       if (!results[10].error) state.links = results[10].data || [];
       else if (state.view === "links") notice("The links could not be read: " + results[10].error.message);
+      // The change log is extra too.
+      if (!results[11].error) state.changes = results[11].data || [];
+      else if (state.view === "projects") notice("The changes could not be read: " + results[11].error.message);
       syncRunPoll();
       var items = results[0].data || [];
       state.people = await loadPeople(items);
@@ -4610,6 +5194,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "meetings" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "project_changes" }, function () { state.log = {}; reloadSoon(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "quick_links" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "cover_reviews" }, reloadSoon)
@@ -4686,7 +5271,8 @@
     $("task-title").value = "";
   });
 
-  $("plan-add").addEventListener("click", function () { openPlanDialog(null); });
+  $("plan-add").addEventListener("click", function () { openPlanDialog(null, null); });
+  $("pd-space").addEventListener("change", function () { fillParentChoices($("pd-space").value, null, null); });
   $("pd-form").addEventListener("submit", function (event) { event.preventDefault(); savePlan(); });
   $("pd-cancel").addEventListener("click", function () { $("plan-dialog").close(); });
   STAGES.forEach(function (st) {
@@ -4813,6 +5399,11 @@
         state.runHist = {};
         state.runEvents = {};
         state.planOpen = {};
+        state.changes = [];
+        state.log = {};
+        state.fix = null;
+        state.addLine = null;
+        state.openProject = null;
         syncRunPoll();
         state.sendFlow = {};
         state.sent = {};
