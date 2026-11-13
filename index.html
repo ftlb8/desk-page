@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="30">
+  <meta name="desk-version" content="31">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=30">
+  <link rel="stylesheet" href="style.css?v=31">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -28,7 +28,7 @@
   </main>
 
   <div id="app" hidden>
-    <header class="bar">
+    <header class="topbar">
       <h1>Desk</h1>
       <nav id="filters" class="filters" aria-label="Organisation"></nav>
       <div class="bar-right">
@@ -52,27 +52,23 @@
       <p id="search-empty" class="empty search-empty" hidden></p>
       <section aria-label="Today" data-view="today" class="today">
         <div class="today-grid">
-          <div class="today-col">
-            <div id="cv-next" class="tsec cv-block"></div>
-            <div id="cv-coming" class="tsec cv-block" hidden></div>
-            <div id="cv-work" class="tsec cv-block" hidden></div>
-            <div id="cv-tasks" class="tsec cv-block"></div>
-          </div>
-          <div class="today-col">
-            <div id="cv-inbox" class="tsec cv-block"></div>
-            <div id="cv-review" class="tsec cv-block"></div>
-            <div id="cv-note" class="tsec cv-block">
-              <div class="tsec-head"><h2 class="tsec-name">Quick note</h2></div>
-              <form id="cvnote-form" class="note-form cv-pad" autocomplete="off">
-                <textarea id="cvnote-body" rows="2" maxlength="20000" placeholder="Write a note" aria-label="Quick note"></textarea>
-                <div class="note-row">
-                  <select id="cvnote-space" aria-label="Organisation"></select>
-                  <button id="cvnote-save" type="submit" class="primary">Save</button>
-                </div>
-                <p id="cvnote-error" class="error" role="alert" hidden></p>
-                <p id="cvnote-ok" class="fine" role="status" hidden>Saved. You can find it in Notes.</p>
-              </form>
-            </div>
+          <div id="cv-next" class="tsec cv-block"></div>
+          <div id="cv-tasks" class="tsec cv-block"></div>
+          <div id="cv-inbox" class="tsec cv-block"></div>
+          <div id="cv-coming" class="tsec cv-block" hidden></div>
+          <div id="cv-work" class="tsec cv-block" hidden></div>
+          <div id="cv-review" class="tsec cv-block"></div>
+          <div id="cv-note" class="tsec cv-block">
+            <div class="tsec-head cv-head"><h2 class="tsec-name">Quick note</h2></div>
+            <form id="cvnote-form" class="note-form cv-pad" autocomplete="off">
+              <textarea id="cvnote-body" rows="2" maxlength="20000" placeholder="Write a note" aria-label="Quick note"></textarea>
+              <div class="note-row">
+                <select id="cvnote-space" aria-label="Organisation"></select>
+                <button id="cvnote-save" type="submit" class="primary">Save</button>
+              </div>
+              <p id="cvnote-error" class="error" role="alert" hidden></p>
+              <p id="cvnote-ok" class="fine" role="status" hidden>Saved. You can find it in Notes.</p>
+            </form>
           </div>
         </div>
       </section>
@@ -83,24 +79,14 @@
 
       <section aria-labelledby="h-plans" data-view="projects">
         <h2 id="h-plans">Projects</h2>
-        <div id="project-changes" class="tsec project-changes"></div>
-        <div id="project-keydates" class="tsec project-changes"></div>
+        <div id="project-changes" class="project-bar"></div>
+        <div id="project-keydates" class="project-bar"></div>
         <div class="task-tools"><button id="plan-add" type="button" class="btn">Add a project</button></div>
         <p id="projects-empty" class="empty" hidden>You have no projects here yet. Add one for anything that will take more than a single task.</p>
-        <div id="box-proj-projects" class="projects-box">
-          <h3 class="theme">Projects</h3>
-          <div id="list-plans" class="list"></div>
-        </div>
-        <div id="box-proj-areas" class="projects-box">
-          <h3 class="theme">Ongoing areas</h3>
-          <div id="list-areas" class="list"></div>
-        </div>
-        <div id="box-proj-unsorted" class="projects-box">
-          <div id="list-unsorted" class="list"></div>
-        </div>
+        <div id="list-proj" class="attn-list"></div>
         <details id="box-decisions">
           <summary>Decisions from your meetings · <span id="n-decisions" class="count"></span></summary>
-          <div id="list-decisions" class="list"></div>
+          <div id="list-decisions" class="rows"></div>
         </details>
       </section>
 
@@ -110,14 +96,14 @@
           <div class="tasks-side">
             <details id="box-suggested">
               <summary>Suggested tasks · <span id="n-suggested" class="count"></span></summary>
-              <div id="list-suggested" class="list"></div>
+              <div id="list-suggested" class="rows"></div>
               <details id="box-later-sug" class="sub-box">
                 <summary>Later <span id="n-later-sug" class="count"></span></summary>
-                <div id="list-later-sug" class="list"></div>
+                <div id="list-later-sug" class="rows"></div>
               </details>
               <details id="box-closed-sug" class="sub-box">
                 <summary>Closed in the last 24 hours <span id="n-closed-sug" class="count"></span></summary>
-                <div id="list-closed-sug" class="list"></div>
+                <div id="list-closed-sug" class="rows"></div>
               </details>
             </details>
           </div>
@@ -130,7 +116,7 @@
             <div id="list-tasks"></div>
             <details id="box-tasks-done">
               <summary>Done in the last 24 hours <span id="n-tasks-done" class="count"></span></summary>
-              <div id="list-tasks-done"></div>
+              <div id="list-tasks-done" class="rows with-check"></div>
             </details>
           </div>
         </div>
@@ -178,12 +164,12 @@
 
       <details id="box-later">
         <summary>Later <span id="n-later" class="count"></span></summary>
-        <div id="list-later" class="list"></div>
+        <div id="list-later" class="rows"></div>
       </details>
 
       <details id="box-closed">
         <summary>Closed in the last 24 hours <span id="n-closed" class="count"></span></summary>
-        <div id="list-closed" class="list"></div>
+        <div id="list-closed" class="rows"></div>
       </details>
     </main>
 
@@ -302,9 +288,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=30"></script>
-  <script src="config.js?v=30"></script>
-  <script src="format.js?v=30"></script>
-  <script src="app.js?v=30"></script>
+  <script src="vendor/supabase-2.119.0.js?v=31"></script>
+  <script src="config.js?v=31"></script>
+  <script src="format.js?v=31"></script>
+  <script src="app.js?v=31"></script>
 </body>
 </html>

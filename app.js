@@ -70,6 +70,7 @@
     kdAll: false,     // "Show all" is on in the Key dates list of the Projects tab
     addLine: null,    // { pageId, projectId, date, text, error, saving } while a line is being added
     openTasks: {},    // ids of tasks you expanded in the list
+    openItems: {},    // ids of inbox items and suggestions you opened in their list
     openSections: { today: true, week: true, weeks: false, later: false }, // task sections you opened or closed
     folds: {},        // the fixed folds (tray, Later, Closed, Decisions, ...) you opened
     query: "",        // what is typed in the search box
@@ -132,6 +133,130 @@
     if (className) node.className = className;
     if (text !== undefined && text !== null) node.textContent = text;
     return node;
+  }
+
+  // ---------- The design system: organisation bars, rows, attention groups, bars ----------
+  // See the comment at the top of style.css. The left edge of a row belongs to its organisation's colour only;
+  // what needs you is said in the state text or a pill. Every row has the same cells, so rows line up in their list.
+
+  var ORGS = { metaculus: true, cea: true, personal: true };
+
+  // The organisation bar on the left edge, with the organisation's name for screen readers.
+  function orgMark(node, space, holder) {
+    if (!ORGS[space]) return node;
+    node.classList.add("org", "org-" + space);
+    var name = el("span", "sr-only org-name", spaceLabel(space) + ": ");
+    var into = holder || node;
+    into.insertBefore(name, into.firstChild);
+    return node;
+  }
+
+  // A small dot in the organisation's colour, shown before its name.
+  function orgDot(space) {
+    var dot = el("span", "org-dot org-" + space);
+    dot.setAttribute("aria-hidden", "true");
+    return dot;
+  }
+
+  // A row: [check] title and one quiet line, state, date, count, actions, chevron.
+  function makeRow(tag, className, space) {
+    var node = el(tag || "div", "row " + className);
+    var head = el("div", "row-head");
+    var main = el("div", "row-main");
+    var meta = el("div", "row-meta");
+    var r = {
+      node: node, head: head, main: main, meta: meta,
+      state: el("div", "row-state"), date: el("div", "row-date"), count: el("div", "row-count"), acts: el("div", "row-acts"),
+      chev: el("span", "row-chev"),
+    };
+    r.chev.setAttribute("aria-hidden", "true");
+    meta.appendChild(r.state);
+    meta.appendChild(r.date);
+    meta.appendChild(r.count);
+    meta.appendChild(r.acts);
+    head.appendChild(main);
+    head.appendChild(meta);
+    head.appendChild(r.chev);
+    node.appendChild(head);
+    orgMark(node, space, main);
+    return r;
+  }
+
+  // The one quiet line under a row's title: its parts are separated by a dot.
+  function rowSub(r, parts) {
+    var sub = el("p", "row-sub");
+    parts.forEach(function (x) {
+      if (x === null || x === undefined || x === "") return;
+      sub.appendChild(typeof x === "string" ? el("span", null, x) : x);
+    });
+    r.main.appendChild(sub);
+    return sub;
+  }
+
+  // A row that opens in place: the title is the button, a click on the row (not on one of its controls) does the same.
+  function rowOpens(r, title, isOpen, toggle) {
+    r.node.classList.add("opens");
+    if (isOpen) r.node.classList.add("is-open");
+    title.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    r.head.addEventListener("click", function (event) {
+      var inner = event.target.closest("input, a, select, textarea, label, button:not(.row-title)");
+      if (inner && r.head.contains(inner)) return;
+      toggle(event);
+    });
+  }
+
+  // State text in one of the three looks: "now" (red), "soon" (amber), "" (normal) or "quiet" (muted).
+  function stateText(text, tone, className) {
+    return el("span", "st" + (tone ? " att-" + tone : "") + (className ? " " + className : ""), text);
+  }
+
+  function pill(text, tone, className) {
+    return el("span", "pill" + (tone ? " att-" + tone : "") + (className ? " " + className : ""), text);
+  }
+
+  // Bars and quiet groups remember whether you opened them, in this browser.
+  function barOpen(key, fallback) {
+    try {
+      var v = localStorage.getItem("desk.bar." + key);
+      return v === null ? fallback : v === "1";
+    } catch (_) { return fallback; }
+  }
+  function setBar(key, open) {
+    try { localStorage.setItem("desk.bar." + key, open ? "1" : "0"); } catch (_) { /* private mode: not remembered */ }
+  }
+
+  // A one-line collapsible bar: chevron, title, a short state or time, a count. Returns { box, head, body }.
+  function makeBar(key, title, count, extra, fallback, className) {
+    var box = el("details", "bar" + (className ? " " + className : ""));
+    box.setAttribute("data-bar", key);
+    var head = el("summary", "bar-head");
+    head.appendChild(el("span", "bar-name", title));
+    if (extra) head.appendChild(extra);
+    head.appendChild(el("span", "count", count === null || count === undefined ? "" : String(count)));
+    box.appendChild(head);
+    var body = el("div", "bar-body");
+    box.appendChild(body);
+    box.open = needles.length ? true : barOpen(key, fallback);
+    head.addEventListener("click", function () { if (!needles.length) setBar(key, !box.open); });
+    return { box: box, head: head, body: body };
+  }
+
+  // An attention group: "Needs you" (red label), "Active", or "Quiet" (muted, folded when it has more than 5 rows).
+  function attnGroup(level, name, count, key) {
+    var quiet = level === "quiet";
+    var box = el(quiet ? "details" : "div", "grp grp-" + level);
+    box.setAttribute("data-attn", level);
+    var head = el(quiet ? "summary" : "div", "grp-head");
+    head.appendChild(el("h3", "grp-name", name));
+    head.appendChild(el("span", "count", String(count)));
+    box.appendChild(head);
+    var body = el("div", "rows");
+    box.appendChild(body);
+    if (quiet) {
+      box.open = needles.length ? true : barOpen("quiet-" + key, count <= 5);
+      head.addEventListener("click", function () { if (!needles.length) setBar("quiet-" + key, !box.open); });
+    }
+    return { box: box, body: body };
   }
 
   // ---------- Formatting ----------
@@ -518,108 +643,131 @@
     return "Marked done";
   }
 
-  // `where` names the place the card is drawn in ("inbox", "today", "sug"); cards that can be started carry a Start button.
+  // `where` names the place the row is drawn in ("inbox", "today", "sug"); rows that can be started carry a Plan button.
+  // A row: the title, who and where in one quiet line, the state, when; Done and Later (or the one quick action) at the
+  // right end. Opening it shows the gist, the message and every other action in place.
   function card(item, kind, where) {
     var m = item.messages || {};
-    var node = el("article", "card urgency-" + item.urgency);
-    node.setAttribute("data-item", item.id);
-
-    var top = el("div", "card-top");
-    top.appendChild(el("span", "tag tag-" + item.space, spaceLabel(item.space)));
-    if (kind === "commit" && item.theme) top.appendChild(el("span", "kind theme-tag", item.theme));
+    var isOpen = !!state.openItems[item.id];
     var promise = item.lane === "commitment";
-    var due = promise ? dueLabel(item.due_on) : null;
-    if (due && kind !== "closed") {
-      top.appendChild(el("span", "flag flag-" + (due.late ? 3 : 2), due.text));
-    } else if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
-      top.appendChild(el("span", "flag flag-" + item.urgency, item.urgency === 3 ? "Today" : "Soon"));
-    }
-    if (kind === "waiting" || kind === "look") {
-      top.appendChild(el("span", "kind lane-tag lane-" + kind, kind === "waiting" ? "Needs you" : "FYI"));
-    }
+    var fyi = kind === "look";
+    var r = makeRow("article", "card item-row urgency-" + item.urgency + (fyi ? " is-quiet" : "") + (kind === "closed" || kind === "later" ? " is-quiet" : ""), item.space);
+    var node = r.node;
+    node.setAttribute("data-item", item.id);
+    var title = button(item.title, "title row-title", function () {});
+    r.main.appendChild(title);
+
+    // The quiet line: who and where, or where a meeting item comes from.
     var meta;
+    var sub = [];
     if (fromNotes(item)) {
       var KINDS = { promise: "Promise", todo: "To-do", decision: "Decision" };
-      top.appendChild(el("span", "kind", KINDS[item.kind] || "To-do"));
+      sub.push(el("span", "kind-text", KINDS[item.kind] || "To-do"));
       var met = meetingDay(item.meeting_on);
       var from = sourcesOf(item);
-      var where = from.length > 1
+      var place = from.length > 1
         ? (from.some(isGranola) && !from.every(isGranola) ? "Notes and Granola" : from.length + " sources")
         : (from[0] ? from[0].label : "Meeting notes");
-      meta = (item.kind === "promise" && item.owed_to ? "Promised to " + item.owed_to + " · " : "") + where + (met ? " · meeting of " + met : "");
+      meta = (item.kind === "promise" && item.owed_to ? "Promised to " + item.owed_to + " · " : "") + place + (met ? " · meeting of " + met : "");
     } else {
-      meta = (promise ? "Promised to " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item) + " · " + ago(m.occurred_at || item.created_at);
+      meta = (promise ? "Promised to " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item);
     }
-    top.appendChild(el("span", "meta", meta));
-    node.appendChild(top);
+    if (kind === "commit" && item.theme) sub.push(el("span", "theme-text", item.theme));
+    sub.push(el("span", "meta", meta));
+    rowSub(r, sub);
 
-    node.appendChild(el("h3", "title", item.title));
+    // State: what needs you is loud; FYI, later and closed are quiet.
+    var due = promise ? dueLabel(item.due_on) : null;
     if (kind === "closed") {
-      node.appendChild(el("p", "reason", closedHow(item) + " · " + ago(item.closed_at)));
+      r.state.appendChild(stateText(closedHow(item), "quiet", "reason"));
     } else if (kind === "later") {
-      node.appendChild(el("p", "reason", "Back " + until(item.snooze_until)));
-    } else if (!item.summary && item.reason && !promise) {
-      node.appendChild(el("p", "reason", item.reason));
-    }
-    if (item.summary) node.appendChild(el("p", "gist", item.summary));
-
-    var doc = docNotice(item);
-    if (fromNotes(item)) {
-      var told = sourcesOf(item).filter(function (x) { return x.quote || x.detail; });
-      if (told.length) {
-        var said = el("details", "message");
-        said.appendChild(el("summary", null, told.length > 1 ? "From the meeting · " + told.length + " sources" : "From the notes"));
-        var saidIn = foldIn(said);
-        told.forEach(function (x) {
-          var block = el("div", "said");
-          var day = meetingDay(x.meeting_on);
-          block.appendChild(el("p", "said-from", x.label + (day ? " · " + day : "")));
-          if (x.quote) block.appendChild(el("p", "body", x.quote));
-          // What the summary above already says is not repeated.
-          if (x.detail && x.detail !== item.summary) block.appendChild(el("p", "said-detail", x.detail));
-          saidIn.appendChild(block);
-        });
-        node.appendChild(said);
-      }
-    } else if (doc) node.appendChild(docView(item, doc));
-    else if (m.body) node.appendChild(originalView(item));
-
-    var actions = el("div", "actions");
-    sourceLinks(item).forEach(function (link) {
-      actions.appendChild(linkTo(link.href, link.label, "btn"));
-    });
-    var canStart = !!where && (kind === "waiting" || kind === "look" || kind === "commit");
-    var startBtn = canStart ? startControl("item", item.id, "btn") : null;
-    if (kind === "decision") {
-      actions.appendChild(button("Noted", "btn", function () { act(item.id, "done"); }));
-      actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
-    } else if (kind === "commit") {
-      // A suggested task: turn it into a task, or say it is done or not a task.
-      if (taskFor(item)) {
-        actions.appendChild(el("span", "made", "In your tasks"));
-      } else {
-        var add = button("Add as task", "btn", function () { taskFromItem(item, add); });
-        actions.appendChild(add);
-      }
-      if (startBtn) actions.appendChild(startBtn);
-      actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
-      actions.appendChild(laterControl(item, "btn subtle"));
-      actions.appendChild(button("Not a task", "btn subtle", function () { act(item.id, "dismiss"); }));
-    } else if (kind === "waiting" || kind === "look") {
-      actions.appendChild(button("Done", "btn", function () { act(item.id, "done"); }));
-      actions.appendChild(laterControl(item, "btn"));
-      if (taskFor(item)) {
-        actions.appendChild(el("span", "made", "In your tasks"));
-      } else {
-        var make = button("Make a task", "btn subtle", function () { taskFromItem(item, make); });
-        actions.appendChild(make);
-      }
-      if (startBtn) actions.appendChild(startBtn);
-      actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
+      r.state.appendChild(stateText("Back " + until(item.snooze_until), "quiet", "reason"));
     } else {
-      actions.appendChild(button("Reopen", "btn", function () { act(item.id, "reopen"); }));
+      if (due) r.state.appendChild(stateText(due.text, due.late ? "now" : "", "flag flag-" + (due.late ? 3 : 2)));
+      else if ((kind === "waiting" || kind === "look") && item.urgency >= 2) {
+        r.state.appendChild(stateText(item.urgency === 3 ? "Today" : "Soon", item.urgency === 3 ? "now" : "soon", "flag flag-" + item.urgency));
+      }
+      if (kind === "waiting") r.state.appendChild(pill("Needs you", "", "kind lane-tag lane-waiting"));
+      else if (kind === "look") r.state.appendChild(stateText("FYI", "quiet", "kind lane-tag lane-look"));
     }
-    node.appendChild(actions);
+    var when = kind === "closed" ? item.closed_at : fromNotes(item) ? null : (m.occurred_at || item.created_at);
+    if (when) r.date.appendChild(el("span", "when-ago", ago(when)));
+    else if (fromNotes(item) && item.meeting_on) r.date.appendChild(el("span", "when-ago", meetingDay(item.meeting_on)));
+
+    // The quick actions at the right end.
+    var canStart = !!where && (kind === "waiting" || kind === "look" || kind === "commit");
+    if (kind === "decision") {
+      r.acts.appendChild(button("Noted", "btn small", function () { act(item.id, "done"); }));
+    } else if (kind === "commit") {
+      if (taskFor(item)) r.acts.appendChild(el("span", "made", "In your tasks"));
+      else {
+        var add = button("Add as task", "btn small", function () { taskFromItem(item, add); });
+        r.acts.appendChild(add);
+      }
+    } else if (kind === "waiting" || kind === "look") {
+      r.acts.appendChild(button("Done", "btn small", function () { act(item.id, "done"); }));
+      r.acts.appendChild(laterControl(item, "btn small"));
+    } else {
+      r.acts.appendChild(button("Reopen", "btn small", function () { act(item.id, "reopen"); }));
+    }
+
+    rowOpens(r, title, isOpen, function () {
+      if (state.openItems[item.id]) delete state.openItems[item.id]; else state.openItems[item.id] = true;
+      var fresh = card(item, kind, where);
+      node.replaceWith(fresh);
+      fresh.querySelector(".row-title").focus({ preventScroll: true });
+    });
+
+    if (isOpen) {
+      var box = el("div", "fold-body item-open");
+      if (item.summary) box.appendChild(el("p", "gist", item.summary));
+      if (item.reason && (!item.summary || kind === "closed" || kind === "later") && !promise) box.appendChild(el("p", "reason", item.reason));
+      var doc = docNotice(item);
+      if (fromNotes(item)) {
+        var told = sourcesOf(item).filter(function (x) { return x.quote || x.detail; });
+        if (told.length) {
+          var said = el("details", "message");
+          said.appendChild(el("summary", null, told.length > 1 ? "From the meeting · " + told.length + " sources" : "From the notes"));
+          var saidIn = foldIn(said);
+          told.forEach(function (x) {
+            var block = el("div", "said");
+            var day = meetingDay(x.meeting_on);
+            block.appendChild(el("p", "said-from", x.label + (day ? " · " + day : "")));
+            if (x.quote) block.appendChild(el("p", "body", x.quote));
+            // What the summary above already says is not repeated.
+            if (x.detail && x.detail !== item.summary) block.appendChild(el("p", "said-detail", x.detail));
+            saidIn.appendChild(block);
+          });
+          box.appendChild(said);
+        }
+      } else if (doc) box.appendChild(docView(item, doc));
+      else if (m.body) box.appendChild(originalView(item));
+
+      var actions = el("div", "actions");
+      sourceLinks(item).forEach(function (link) {
+        actions.appendChild(linkTo(link.href, link.label, "btn"));
+      });
+      var startBtn = canStart ? startControl("item", item.id, "btn") : null;
+      if (kind === "decision") {
+        actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
+      } else if (kind === "commit") {
+        if (startBtn) actions.appendChild(startBtn);
+        actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
+        actions.appendChild(laterControl(item, "btn subtle"));
+        actions.appendChild(button("Not a task", "btn subtle", function () { act(item.id, "dismiss"); }));
+      } else if (kind === "waiting" || kind === "look") {
+        if (taskFor(item)) {
+          actions.appendChild(el("span", "made", "In your tasks"));
+        } else {
+          var make = button("Make a task", "btn subtle", function () { taskFromItem(item, make); });
+          actions.appendChild(make);
+        }
+        if (startBtn) actions.appendChild(startBtn);
+        actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
+      }
+      if (actions.children.length) box.appendChild(actions);
+      node.appendChild(box);
+    }
     if (canStart) {
       var panel = startPanel("item", item.id, where);
       if (panel) node.appendChild(panel);
@@ -728,7 +876,7 @@
     head.appendChild(el("span", "tsec-name", name));
     head.appendChild(el("span", "count", String(entries.length)));
     box.appendChild(head);
-    var body = el("div", "tsec-body");
+    var body = el("div", "tsec-body rows");
     if (!entries.length) body.appendChild(el("p", "empty", "Nothing here"));
     entries.forEach(function (e) { body.appendChild(card(e.item, e.kind, "inbox")); });
     box.appendChild(body);
@@ -741,7 +889,11 @@
   function renderInbox(waiting, look) {
     var all = waiting.map(function (i) { return { item: i, kind: "waiting" }; })
       .concat(look.map(function (i) { return { item: i, kind: "look" }; }));
-    all.sort(function (a, b) { return newest(a.item, b.item); });
+    // What needs you first, then FYI; newest first inside each.
+    all.sort(function (a, b) {
+      if ((a.kind === "waiting") !== (b.kind === "waiting")) return a.kind === "waiting" ? -1 : 1;
+      return newest(a.item, b.item);
+    });
     var parts = { key: [], others: [], channels: [], email: [] };
     all.forEach(function (e) {
       if (isEmail(e.item)) parts.email.push(e);
@@ -786,7 +938,7 @@
 
   function setFold(id, hasMatch) {
     var chosen = state.folds[id];
-    if (chosen === undefined && id === "box-suggested") chosen = wide();
+    if (chosen === undefined) chosen = barOpen(id, id === "box-suggested" ? wide() : false);
     $(id).open = needles.length ? !!hasMatch : !!chosen;
   }
 
@@ -915,12 +1067,18 @@
     nav.textContent = "";
     SPACES.forEach(function (s) {
       var n = s.id === "all" ? totalWaiting : (waitingBySpace[s.id] || 0);
-      var b = button(s.label + (n ? " " + n : ""), "filter" + (state.filter === s.id ? " on" : ""), function () {
+      var b = button("", "filter" + (s.id !== "all" ? " org-filter org-" + s.id : "") + (state.filter === s.id ? " on" : ""), function () {
         markLooked(); // leaving an organisation counts as having looked at it
         state.filter = s.id;
         writePref("desk.space", s.id);
         render();
       });
+      if (s.id !== "all") b.appendChild(orgDot(s.id));
+      b.appendChild(document.createTextNode(s.label));
+      if (n) {
+        b.appendChild(document.createTextNode(" "));
+        b.appendChild(el("span", "filter-n", String(n)));
+      }
       b.setAttribute("aria-pressed", state.filter === s.id ? "true" : "false");
       if (s.id !== "all" && state.filter !== s.id && hasUpdates(s.id)) {
         var dot = el("span", "upd-dot");
@@ -1072,9 +1230,9 @@
   // "Now" while it runs, "In 25 min" in the last hour before it starts.
   function timingFlag(m, now) {
     if (m.all_day) return null;
-    if (isLive(m, now)) return el("span", "flag flag-3", "Now");
+    if (isLive(m, now)) return stateText("Now", "now", "flag flag-3");
     var mins = Math.ceil((meetingDate(m).getTime() - now) / 60000);
-    return mins > 0 && mins <= 60 ? el("span", "flag flag-2", "In " + mins + " min") : null;
+    return mins > 0 && mins <= 60 ? stateText("In " + mins + " min", "soon", "flag flag-2") : null;
   }
 
   // "With Ana, Ben and 3 more", or "" when nobody else is invited.
@@ -1096,21 +1254,7 @@
     fold.appendChild(el("summary", null, (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "")));
     var foldBox = foldIn(fold);
     if (m.brief) foldBox.appendChild(el("p", "gist", m.brief));
-    if (owed.length) {
-      var box = el("div", "owed");
-      box.appendChild(el("p", "owed-head", "What you owe"));
-      owed.forEach(function (o) {
-        var row = el("button", "owed-row");
-        row.type = "button";
-        row.appendChild(el("span", "owed-title", o.title));
-        if (o.why) row.appendChild(el("span", "owed-why", o.why));
-        row.addEventListener("click", function () {
-          if (o.kind === "task") openTask(o.target); else goToItem(o.target);
-        });
-        box.appendChild(row);
-      });
-      foldBox.appendChild(box);
-    }
+    if (owed.length) foldBox.appendChild(owedBox(owed));
     // The page redraws now and then; remember which folds you opened so they stay open.
     fold.open = !!state.openMeetings[m.id];
     fold.addEventListener("toggle", function () {
@@ -1119,37 +1263,69 @@
     return fold;
   }
 
+  // A meeting as a row: title and who in one quiet line, the state (now, soon, not answered), the time, Join at the right end.
+  // Opening it shows the context, what you owe and the calendar link.
   function meetingCard(m, now) {
     var start = meetingDate(m);
     var live = isLive(m, now);
-    var node = el("article", "card meeting" + (live ? " in-progress" : ""));
+    var isOpen = !!state.openMeetings[m.id];
+    var ended = meetingEnded(m, now);
+    var r = makeRow("article", "card meeting" + (live ? " in-progress" : "") + (ended ? " is-quiet" : ""), m.space);
+    var node = r.node;
     node.setAttribute("data-meeting", m.id);
-
-    var top = el("div", "card-top");
-    top.appendChild(el("span", "tag tag-" + m.space, spaceLabel(m.space)));
-    top.appendChild(el("span", "when", m.all_day ? "All day" : clock(start) + " – " + clock(meetingEnd(m))));
-    if (m.recurring_event_id) top.appendChild(el("span", "kind", "Repeats"));
+    var title = button(m.title || "Meeting", "title row-title", function () {});
+    r.main.appendChild(title);
+    var owed = openOwed(m);
+    // What opening the row shows: "Context", "3 to deliver", or both.
+    var more = (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "");
+    rowSub(r, [withLine(m) ? el("span", "reason", withLine(m)) : null, m.recurring_event_id ? el("span", "kind-text", "Repeats") : null, more ? el("span", "meet-more", more) : null]);
     var flag = timingFlag(m, now);
-    if (flag) top.appendChild(flag);
-    if (RESPONSES[m.my_response]) top.appendChild(el("span", "flag flag-2", RESPONSES[m.my_response]));
-    node.appendChild(top);
-
-    node.appendChild(el("h3", "title", m.title || "Meeting"));
-
-    var who = withLine(m);
-    if (who) node.appendChild(el("p", "reason", who));
-    var fold = meetingFold(m);
-    if (fold) node.appendChild(fold);
-
+    if (flag) r.state.appendChild(flag);
+    // Not answered / Maybe: amber when nothing else on the row is loud, plain beside Now or In N min.
+    if (RESPONSES[m.my_response]) r.state.appendChild(stateText(RESPONSES[m.my_response], flag ? "" : "soon", "flag flag-2"));
+    r.date.appendChild(el("span", "when", m.all_day ? "All day" : clock(start) + " – " + clock(meetingEnd(m))));
     var join = httpsLink(m.join_url);
     var cal = httpsLink(m.event_url);
-    if (join || cal) {
-      var actions = el("div", "actions");
-      if (join) actions.appendChild(linkTo(join, "Join", "btn join"));
-      if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
-      node.appendChild(actions);
+    if (join && !ended) r.acts.appendChild(linkTo(join, "Join", "btn small join"));
+
+    var hasMore = !!(m.brief || owed.length || cal || (join && ended));
+    if (!hasMore) return node;
+    rowOpens(r, title, isOpen, function () {
+      if (state.openMeetings[m.id]) delete state.openMeetings[m.id]; else state.openMeetings[m.id] = true;
+      var fresh = meetingCard(m, Date.now());
+      node.replaceWith(fresh);
+      fresh.querySelector(".row-title").focus({ preventScroll: true });
+    });
+    if (isOpen) {
+      var box = el("div", "fold-body meeting-open");
+      if (m.brief) { box.appendChild(label("Context")); box.appendChild(el("p", "gist", m.brief)); }
+      if (owed.length) box.appendChild(owedBox(owed));
+      if (cal || (join && ended)) {
+        var actions = el("div", "actions");
+        if (join && ended) actions.appendChild(linkTo(join, "Join", "btn join"));
+        if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
+        box.appendChild(actions);
+      }
+      node.appendChild(box);
     }
     return node;
+  }
+
+  // "What you owe" for a meeting: each line opens the task or the item.
+  function owedBox(owed) {
+    var box = el("div", "owed");
+    box.appendChild(el("p", "owed-head", "What you owe"));
+    owed.forEach(function (o) {
+      var row = el("button", "owed-row");
+      row.type = "button";
+      row.appendChild(el("span", "owed-title", o.title));
+      if (o.why) row.appendChild(el("span", "owed-why", o.why));
+      row.addEventListener("click", function () {
+        if (o.kind === "task") openTask(o.target); else goToItem(o.target);
+      });
+      box.appendChild(row);
+    });
+    return box;
   }
 
   function renderMeetings() {
@@ -1194,7 +1370,7 @@
       var name = day.offset === 0 ? "Today" : day.offset === 1 ? "Tomorrow"
         : new Date(key).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
       column.appendChild(el("h3", "theme day", name));
-      var cards = el("div", "list");
+      var cards = el("div", "rows");
       var byTime = function (a, b) {
         if (!!a.all_day !== !!b.all_day) return a.all_day ? -1 : 1;
         return meetingDate(a).getTime() - meetingDate(b).getTime();
@@ -1211,7 +1387,7 @@
         var head = el("summary", null, "Earlier today · " + earlier.length);
         head.addEventListener("click", function () { state.folds.earlier = !fold.open; });
         fold.appendChild(head);
-        var inner = el("div", "list");
+        var inner = el("div", "rows");
         earlier.forEach(function (m) { inner.appendChild(meetingCard(m, now)); });
         fold.appendChild(inner);
         fold.open = needles.length ? true : !!state.folds.earlier;
@@ -1462,10 +1638,11 @@
   function changeLine(c, where, page) {
     var line = el("div", "change-line" + (c.origin === "you" ? " is-yours" : ""));
     line.setAttribute("data-change", c.id);
+    orgMark(line, c.space);
     var head = el("p", "change-head");
     if (where === "log") head.appendChild(el("span", "meta change-date", changeDate(c.changed_on)));
     var owner = projectById(c.project_id);
-    if (!page && owner) head.appendChild(el("strong", "change-project", projectLabel(owner)));
+    if (!page && owner) head.appendChild(el("span", "change-project", projectLabel(owner)));
     if (page && owner && !sameId(owner.id, page.id)) head.appendChild(el("span", "topic-chip", owner.name));
     if (c.origin === "you") head.appendChild(el("span", "pill pill-yours", "yours"));
     line.appendChild(head);
@@ -1505,17 +1682,15 @@
     var rows = (state.changes || []).filter(function (c) {
       return inFilter(c) && c.changed_on >= cutoff && projectById(c.project_id);
     });
-    var head = el("div", "tsec-head");
-    head.appendChild(el("h3", "tsec-name", "What changed"));
     var day = rows.reduce(function (best, c) { return c.changed_on > best ? c.changed_on : best; }, "");
+    var dayName = "";
     if (day) {
       rows = rows.filter(function (c) { return c.changed_on === day; }).sort(newestChange);
-      var dayName = day === localDay() ? "today" : day === localDay(new Date(Date.now() - DAY)) ? "yesterday" : changeDate(day);
-      head.appendChild(el("span", "meta", dayName));
-      head.appendChild(el("span", "count", String(rows.length)));
+      dayName = day === localDay() ? "today" : day === localDay(new Date(Date.now() - DAY)) ? "yesterday" : changeDate(day);
     }
-    box.appendChild(head);
-    var body = el("div", "tsec-body cv-pad");
+    var bar = makeBar("changes", "What changed", rows.length ? rows.length : 0, dayName ? el("span", "bar-time meta", dayName) : null, false, "project-changes");
+    box.appendChild(bar.box);
+    var body = el("div", "lines");
     if (!rows.length) {
       body.appendChild(el("p", "empty", "The daily update has not added anything yet."));
     } else {
@@ -1530,7 +1705,7 @@
         body.appendChild(more);
       }
     }
-    box.appendChild(body);
+    bar.body.appendChild(body);
   }
 
   async function addLine() {
@@ -1708,7 +1883,7 @@
 
     // Tasks
     inside.appendChild(label("Tasks"));
-    var tasksBox = el("div", "proj-tasks");
+    var tasksBox = el("div", "rows with-check proj-tasks");
     if (!open.length) tasksBox.appendChild(el("p", "empty", "You have no open tasks here."));
     var order = function (rows) { return urgentFirst(rows.slice().sort(taskOrder)); };
     if (!topics.length) {
@@ -1851,62 +2026,78 @@
     inside.appendChild(actions);
   }
 
-  // Opens or closes a card; one project page is open at a time.
-  function toggleCard(id, fold, node) {
-    var opening = fold.open;
-    if (opening === sameId(state.openProject, id)) return;
-    state.openProject = opening ? id : null;
+  // Opens or closes a project row; one project page is open at a time.
+  function toggleProject(id) {
+    state.openProject = sameId(state.openProject, id) ? null : id;
     render();
-    var summary = onPage('[data-project="' + id + '"] details.message > summary');
-    if (summary) summary.focus({ preventScroll: true });
+    var title = onPage('[data-project="' + id + '"] .row-title');
+    if (title) title.focus({ preventScroll: true });
   }
 
-  function cardFold(node, id, isOpen, build) {
-    var fold = el("details", "message");
-    fold.appendChild(el("summary", null, "Details"));
-    if (isOpen) {
-      var inside = foldIn(fold);
-      inside.classList.add("project-page");
-      build(inside);
+  // How much a project needs you, and the one thing that says why.
+  // needs: an urgent or overdue open task, a key date that is due, past or inside its warning, or a review that asks for attention.
+  // active: changed in the last 7 days, or has open tasks. quiet: the rest.
+  function projectAttention(p) {
+    var open = openTasksOf(p);
+    var today = localDay();
+    var urgent = open.filter(function (t) { return t.urgent; }).length;
+    var overdue = open.filter(function (t) { return t.due_on && t.due_on < today; }).length;
+    var keys = keyDatesOf(p).filter(function (k) { return k.status === "open"; }).sort(byKeyDate);
+    var late = keys.filter(function (k) { return keyTone(k) === "late"; })[0];
+    var due = keys.filter(function (k) { return keyTone(k) === "warn"; })[0];
+    var near = keys.filter(function (k) { return keyTone(k) === "ahead" && keyInWindow(k); })[0];
+    var review = p.review && typeof p.review === "object" ? p.review : {};
+    var plural = function (n, one) { return n + " " + one + (n === 1 ? "" : "s"); };
+    if (late) return { level: "needs", tone: "now", text: "Key date " + keyCount(daysTo(late.on_date)) };
+    if (overdue) return { level: "needs", tone: "now", text: plural(overdue, "overdue task") };
+    if (urgent) return { level: "needs", tone: "now", text: plural(urgent, "urgent task") };
+    if (due) return { level: "needs", tone: "soon", text: "Key date " + (daysTo(due.on_date) === 0 ? "today" : "due, last day " + keyDay(due.hard_limit || due.on_date)) };
+    if (!isArea(p) && review.attention) return { level: "needs", tone: "soon", text: "Review: " + String(review.attention) };
+    if (near) return { level: "needs", tone: "soon", text: "Key date " + keyCount(daysTo(near.on_date)) };
+    var last = lastChangeOf(p);
+    var week = localDay(new Date(Date.now() - 6 * DAY));
+    if (last && last.changed_on >= week) {
+      var day = last.changed_on === today ? "today" : last.changed_on === localDay(new Date(Date.now() - DAY)) ? "yesterday" : changeDate(last.changed_on);
+      return { level: "active", tone: "", text: "Changed " + day, changed: true };
     }
-    fold.open = isOpen;
-    fold.addEventListener("toggle", function () { toggleCard(id, fold, node); });
-    node.appendChild(fold);
+    if (open.length) return { level: "active", tone: "", text: plural(open.length, "open task") };
+    var since = last ? changeDate(last.changed_on) : changeDate(localDay(new Date(Date.now() - CHANGE_DAYS * DAY)));
+    return { level: "quiet", tone: "quiet", text: "Quiet since " + since };
   }
 
+  // A project or ongoing area as a row: name and its topics count, the one most important thing, the next key date and the open tasks.
   function projectCard(p) {
     var isOpen = sameId(state.openProject, p.id);
-    var node = el("article", "card plan proj" + (isOpen ? " is-open" : ""));
+    var att = projectAttention(p);
+    var r = makeRow("article", "card plan proj" + (att.level === "quiet" ? " is-quiet" : ""), p.space);
+    var node = r.node;
     node.setAttribute("data-project", p.id);
-    var top = el("div", "card-top");
-    top.appendChild(el("span", "tag tag-" + p.space, spaceLabel(p.space)));
-    if (!isArea(p) && p.stage) top.appendChild(el("span", "kind", stageLabel(p)));
-    node.appendChild(top);
-    node.appendChild(el("h3", "title", p.name));
-    node.appendChild(el("p", "reason card-count", countText(openTasksOf(p))));
-    var nextKey = keyDatesOf(p).filter(function (k) { return k.status === "open"; }).sort(byKeyDate)[0];
-    if (nextKey) node.appendChild(el("p", "reason kd-next kd-" + keyTone(nextKey), "Next: " + keyDay(nextKey.on_date) + ", " + nextKey.text));
+    node.setAttribute("data-kind", isArea(p) ? "area" : "project");
+    var title = button(p.name, "title row-title", function () {});
+    r.main.appendChild(title);
     var topics = topicsOf(p);
-    if (topics.length) {
-      var chips = el("p", "topic-chips");
-      topics.forEach(function (t) { chips.appendChild(el("span", "topic-chip", t.name)); });
-      node.appendChild(chips);
+    var standing = standingText(p).split("\n")[0];
+    rowSub(r, [topics.length ? (topics.length === 1 ? "1 topic" : topics.length + " topics") : null, standing ? el("span", "standing", standing) : null]);
+    r.state.appendChild(stateText(att.text, att.tone, att.changed && att.text === "Changed today" ? "changed-line is-today" : att.level === "quiet" ? "changed-line" : ""));
+    var nextKey = keyDatesOf(p).filter(function (k) { return k.status === "open"; }).sort(byKeyDate)[0];
+    if (nextKey) {
+      var kd = el("span", "kd-next", keyDay(nextKey.on_date));
+      kd.title = "Next key date: " + nextKey.text;
+      r.date.appendChild(kd);
     }
-    var review = p.review && typeof p.review === "object" ? p.review : {};
-    if (!isArea(p) && review.attention) {
-      var warn = el("p", "reason attention");
-      warn.appendChild(el("span", "flag flag-3", "Needs attention"));
-      warn.appendChild(document.createTextNode(" " + review.attention));
-      node.appendChild(warn);
+    var n = openTasksOf(p).length;
+    var count = el("span", "card-count" + (n ? "" : " is-zero"), String(n));
+    count.setAttribute("aria-label", countText(openTasksOf(p)));
+    count.title = countText(openTasksOf(p));
+    r.count.appendChild(count);
+    rowOpens(r, title, isOpen, function () { toggleProject(p.id); });
+    if (isOpen) {
+      var inside = el("div", "fold-body project-page");
+      var kind = isArea(p) ? "Ongoing area" : "Project" + (p.stage ? " · " + stageLabel(p) : "");
+      inside.appendChild(el("p", "fine proj-kind", kind + (topics.length ? " · topics: " + topics.map(function (t) { return t.name; }).join(", ") : "")));
+      projectPage(p, inside);
+      node.appendChild(inside);
     }
-    var last = lastChangeOf(p);
-    if (last && last.changed_on === localDay()) {
-      node.appendChild(el("p", "reason changed-line is-today", "Changed today"));
-    } else {
-      var since = last ? changeDate(last.changed_on) : changeDate(localDay(new Date(Date.now() - CHANGE_DAYS * DAY)));
-      node.appendChild(el("p", "reason changed-line", "Quiet since " + since));
-    }
-    cardFold(node, p.id, isOpen, function (inside) { projectPage(p, inside); });
     return node;
   }
 
@@ -1926,15 +2117,25 @@
 
   function unsortedCard(tasks) {
     var isOpen = sameId(state.openProject, "unsorted");
-    var node = el("article", "card plan proj unsorted" + (isOpen ? " is-open" : ""));
+    var r = makeRow("article", "card plan proj unsorted", null);
+    var node = r.node;
     node.setAttribute("data-project", "unsorted");
-    node.appendChild(el("h3", "title", "Unsorted"));
-    node.appendChild(el("p", "reason card-count", countText(tasks)));
+    var title = button("Unsorted", "title row-title", function () {});
+    r.main.appendChild(title);
     var looseKeys = unsortedKeys();
-    node.appendChild(el("p", "reason", looseKeys.length ? "Tasks and key dates that are not in a project yet." : "Tasks that are not in a project yet."));
-    cardFold(node, "unsorted", isOpen, function (inside) {
+    rowSub(r, [el("span", "reason", looseKeys.length ? "Tasks and key dates that are not in a project yet." : "Tasks that are not in a project yet.")]);
+    var today = localDay();
+    var hot = tasks.filter(function (t) { return t.urgent || (t.due_on && t.due_on < today); }).length;
+    r.state.appendChild(hot ? stateText(hot + (hot === 1 ? " urgent or overdue task" : " urgent or overdue tasks"), "now") : stateText(countText(tasks), tasks.length ? "" : "quiet"));
+    var count = el("span", "card-count" + (tasks.length ? "" : " is-zero"), String(tasks.length));
+    count.setAttribute("aria-label", countText(tasks));
+    r.count.appendChild(count);
+    rowOpens(r, title, isOpen, function () { toggleProject("unsorted"); });
+    if (isOpen) {
+      var inside = el("div", "fold-body project-page");
       if (looseKeys.length) keyDatesSection(inside, null);
       inside.appendChild(label("Tasks"));
+      var list = el("div", "rows with-check proj-tasks");
       urgentFirst(tasks.slice().sort(taskOrder)).forEach(function (t) {
         var wrap = el("div", "unsorted-row");
         wrap.setAttribute("data-unsorted", t.id);
@@ -1958,20 +2159,15 @@
         file.appendChild(lab);
         file.appendChild(pick);
         wrap.appendChild(file);
-        inside.appendChild(wrap);
+        list.appendChild(wrap);
       });
-    });
-    return node;
+      inside.appendChild(list);
+      node.appendChild(inside);
+    }
+    return { node: node, needs: hot > 0 };
   }
 
-  function projectGroup(boxId, listId, cards) {
-    var list = $(listId);
-    list.textContent = "";
-    cards.forEach(function (c) { list.appendChild(c); });
-    $(boxId).hidden = !cards.length;
-  }
-
-  // Draws the Projects tab; returns how many cards it shows.
+  // Draws the Projects tab, grouped by how much each needs you; returns how many rows it shows.
   function renderProjects() {
     var keyRows = renderKeyStrip();
     renderChangesStrip();
@@ -1981,10 +2177,8 @@
       var x = rank(a), y = rank(b);
       return x === y ? byName(a, b) : x > y ? -1 : 1;
     };
-    var projects = visible.filter(function (p) { return !isArea(p); }).sort(newestFirst);
-    var areas = visible.filter(isArea).sort(newestFirst);
-    projectGroup("box-proj-projects", "list-plans", projects.map(projectCard));
-    projectGroup("box-proj-areas", "list-areas", areas.map(projectCard));
+    var groups = { needs: [], active: [], quiet: [] };
+    visible.slice().sort(newestFirst).forEach(function (p) { groups[projectAttention(p).level].push(p); });
     var loose = unsortedTasks();
     var looseKeys = unsortedKeys();
     if (needles.length) {
@@ -1992,12 +2186,25 @@
       looseKeys = looseKeys.filter(function (k) { return hit([k.text, k.note]); });
     }
     var showUnsorted = loose.length || looseKeys.length;
-    projectGroup("box-proj-unsorted", "list-unsorted", showUnsorted ? [unsortedCard(loose)] : []);
-    var total = projects.length + areas.length + (showUnsorted ? 1 : 0) + (needles.length ? keyRows : 0);
+    var unsorted = showUnsorted ? unsortedCard(loose) : null;
+    var list = $("list-proj");
+    list.textContent = "";
+    var draw = function (level, name, projects, extra) {
+      var n = projects.length + (extra ? 1 : 0);
+      if (!n) return;
+      var g = attnGroup(level, name, n, "projects");
+      projects.forEach(function (p) { g.body.appendChild(projectCard(p)); });
+      if (extra) g.body.appendChild(extra);
+      list.appendChild(g.box);
+    };
+    draw("needs", "Needs you", groups.needs, unsorted && unsorted.needs ? unsorted.node : null);
+    draw("active", "Active", groups.active, unsorted && !unsorted.needs ? unsorted.node : null);
+    draw("quiet", "Quiet", groups.quiet, null);
+    var total = visible.length + (showUnsorted ? 1 : 0) + (needles.length ? keyRows : 0);
     var some = state.projects.some(function (p) { return isTopLevel(p) && inFilter(p); });
     $("projects-empty").hidden = some || needles.length > 0 || showUnsorted;
     // The open page loads its change log the first time it is shown.
-    var shownOpen = projects.concat(areas).filter(function (p) { return sameId(state.openProject, p.id); })[0];
+    var shownOpen = visible.filter(function (p) { return sameId(state.openProject, p.id); })[0];
     if (shownOpen) ensureLog(shownOpen);
     return total;
   }
@@ -2148,34 +2355,40 @@
     return text;
   }
 
-  function pills(task, where) {
+  // What a task's row says about it. The pills are what needs you, in this order, at most two on the row:
+  // Urgent, overdue, slipped, and a run that is on it. The rest goes in the open details.
+  function taskPills(task) {
     var open = task.status === "open";
-    var box = el("div", "pills");
-    box.appendChild(el("span", "pill tag-" + task.space, spaceLabel(task.space)));
-    if (projectName(task)) {
-      if (where === "projects") {
-        box.appendChild(el("span", "pill project-pill", projectName(task)));
-      } else {
-        box.appendChild(button(projectName(task), "pill project-pill", function () {
+    var out = [];
+    if (!open) return out;
+    if (task.urgent) out.push(pill("Urgent", "now", "pill-urgent"));
+    if (task.due_on && daysFrom(task.due_on) < 0) out.push(pill(duePill(task.due_on).text, "now", "pill-late"));
+    if (task.slips >= 2) out.push(pill("slipped " + task.slips + "x", "soon", "pill-slip"));
+    var live = activeRunOf(task.id);
+    if (live) out.push(pill(live.status === "needs_you" ? "Needs you" : "Working", live.status === "needs_you" ? "now" : "", "run-st-" + live.status));
+    return out;
+  }
+
+  // The quiet line under the title: the project (a button that shows its tasks, in Tasks), how it repeats, its steps, and the
+  // first line of its background.
+  function taskSub(task, where) {
+    var parts = [];
+    var name = projectName(task);
+    if (name) {
+      if (where === "tasks" || where === "today") {
+        parts.push(button(name, "project-pill", function () {
           state.project = task.project_id;
-          render();
+          if (where === "today") showView("tasks"); else render();
         }));
+      } else {
+        parts.push(el("span", "project-pill", name));
       }
     }
-    var live = open ? activeRunOf(task.id) : null;
-    if (live) box.appendChild(el("span", "pill run-st-" + live.status, live.status === "needs_you" ? "Needs you" : "Working"));
-    if (open && task.urgent) box.appendChild(el("span", "pill pill-urgent", "Urgent"));
-    if (open && task.due_on) {
-      var due = duePill(task.due_on);
-      box.appendChild(el("span", "pill " + due.tone, due.text));
-    }
-    if (open && task.slips >= 2) box.appendChild(el("span", "pill pill-slip", "slipped " + task.slips + "x"));
-    if (task.repeat && REPEAT_PILL[task.repeat]) box.appendChild(el("span", "pill", "repeats " + REPEAT_PILL[task.repeat]));
+    if (task.repeat && REPEAT_PILL[task.repeat]) parts.push(el("span", "repeat-text", "repeats " + REPEAT_PILL[task.repeat]));
     var steps = Array.isArray(task.steps) ? task.steps : [];
-    if (steps.length && open) {
-      box.appendChild(el("span", "pill", steps.filter(function (x) { return x.done; }).length + "/" + steps.length + " steps"));
-    }
-    return box;
+    if (steps.length && task.status === "open") parts.push(el("span", "steps-text", steps.filter(function (x) { return x.done; }).length + "/" + steps.length + " steps"));
+    if (task.context && !state.openTasks[task.id]) parts.push(el("span", "trow-why", why(task)));
+    return parts;
   }
 
   // The first line of the background, for the one muted line under the pills.
@@ -2227,10 +2440,16 @@
   }
 
   // What you see when you open a task in the list: everything it holds, read-only.
-  function taskDetails(task, row, where) {
+  function taskDetails(task, row, where, extra) {
     var open = task.status === "open";
     var box = el("div", "fold-body task-open");
     var any = false;
+    var tags = el("p", "fine task-tags");
+    tags.appendChild(el("span", null, spaceLabel(task.space)));
+    (extra || []).forEach(function (x) { tags.appendChild(document.createTextNode(" · ")); tags.appendChild(x); });
+    box.appendChild(tags);
+    var late = lateNote(task);
+    if (late) box.appendChild(el("p", "trow-late", late));
     if (task.context) { box.appendChild(el("p", "gist pre", task.context)); any = true; }
     var steps = Array.isArray(task.steps) ? task.steps : [];
     if (steps.length) {
@@ -2308,43 +2527,45 @@
 
   function taskRow(task, where) {
     var isOpen = !!state.openTasks[task.id];
-    var row = el("div", "trow" + (task.status === "done" ? " is-done" : "") + (isOpen ? " is-open" : "") + (task.urgent && task.status === "open" ? " is-urgent" : ""));
+    var open = task.status === "open";
+    var r = makeRow("div", "trow" + (task.status === "done" ? " is-done is-quiet" : "") + (task.urgent && open ? " is-urgent" : ""), task.space);
+    var row = r.node;
     row.setAttribute("data-task", task.id);
     var tick = document.createElement("input");
     tick.type = "checkbox";
-    tick.className = "round";
+    tick.className = "round row-check";
     tick.checked = task.status === "done";
     tick.setAttribute("aria-label", task.status === "done" ? "Reopen task" : "Mark task done");
     tick.addEventListener("change", async function () {
       if (!tick.checked) { saveTask(task.id, { status: "open", done_at: null }); return; }
       finishTask(task, row);
     });
-    row.appendChild(tick);
+    r.head.insertBefore(tick, r.main);
 
-    var main = el("div", "trow-main");
-    var title = button(task.title, "task-title", function () {});
-    title.setAttribute("aria-expanded", isOpen ? "true" : "false");
-    main.appendChild(title);
-    main.appendChild(pills(task, where));
-    var late = lateNote(task);
-    if (late) main.appendChild(el("p", "trow-late", late));
-    if (!isOpen && task.context) main.appendChild(el("p", "trow-why", why(task)));
-    row.appendChild(main);
-    if (task.status === "open") {
-      // On a wide screen a small quiet button sits at the right end of the row (hidden by the stylesheet on a phone).
-      var rowStart = planControl(task, "quiet row-start");
-      if (rowStart) row.appendChild(rowStart);
+    var title = button(task.title, "task-title row-title", function () {});
+    r.main.appendChild(title);
+    rowSub(r, taskSub(task, where));
+    var all = taskPills(task);
+    all.slice(0, 2).forEach(function (x) { r.state.appendChild(x); });
+    if (open && task.due_on) {
+      var due = duePill(task.due_on);
+      var n = daysFrom(task.due_on);
+      // The date is loud only when nothing else on the row is.
+      var tone = !all.length && n === 0 ? " att-soon" : "";
+      r.date.appendChild(el("span", "due" + tone, due.text.replace(/^overdue \d+d$/, "due " + shortDate(new Date(task.due_on + "T12:00:00")))));
     }
-    if (isOpen) row.appendChild(taskDetails(task, row, where));
-    if (task.status === "open") {
+    if (open) {
+      var rowStart = planControl(task, "quiet row-start");
+      if (rowStart) r.acts.appendChild(rowStart);
+    }
+    if (isOpen) row.appendChild(taskDetails(task, row, where, all.slice(2)));
+    if (open) {
       var planBox = planPanel(task, where);
       if (planBox) row.appendChild(planBox);
     }
 
     // Tapping the row opens or closes it in place. Controls inside it do their own thing.
-    row.addEventListener("click", function (event) {
-      var inner = event.target.closest("input, a, select, .fold-body, button:not(.task-title)");
-      if (inner && row.contains(inner)) return; // a control of the row itself (the row may sit inside a project page)
+    rowOpens(r, title, isOpen, function (event) {
       if (state.openTasks[task.id]) delete state.openTasks[task.id]; else state.openTasks[task.id] = true;
       var fresh = taskRow(task, where);
       row.replaceWith(fresh);
@@ -2392,7 +2613,7 @@
     head.appendChild(el("span", "tsec-name", name));
     head.appendChild(el("span", "count", String(rows.length)));
     box.appendChild(head);
-    var body = el("div", "tsec-body");
+    var body = el("div", "tsec-body rows with-check");
     if (!rows.length) body.appendChild(el("p", "empty", "Nothing here"));
     rows.forEach(function (t) { body.appendChild(taskRow(t, "tasks")); });
     box.appendChild(body);
@@ -2941,21 +3162,22 @@
     if (res.error) notice("That did not save: " + res.error.message);
   }
 
+  // The top line of a note: its project, Pinned and the date, all quiet. The organisation is the bar on its left edge.
   function noteTop(n) {
     var top = el("div", "card-top");
-    top.appendChild(el("span", "tag tag-" + n.space, spaceLabel(n.space)));
     var plan = projectById(n.project_id);
-    if (plan) top.appendChild(el("span", "kind", projectLabel(plan)));
-    top.appendChild(el("span", "meta", noteDate(n.created_at)));
-    if (n.pinned) top.appendChild(el("span", "flag pin-flag", "Pinned"));
+    if (plan) top.appendChild(el("span", "kind-text", projectLabel(plan)));
+    if (n.pinned) top.appendChild(el("span", "pin-flag", "Pinned"));
+    top.appendChild(el("span", "meta note-date", noteDate(n.created_at)));
     return top;
   }
 
   // The card turns into a box for the words and a plan picker, in place.
   function editNote(n) {
     var id = n.id;
-    var node = el("article", "card note editing");
+    var node = el("article", "tile card note editing");
     node.setAttribute("data-note", id);
+    orgMark(node, n.space);
     node.appendChild(noteTop(n));
     var ta = el("textarea", "note-edit");
     ta.value = n.body;
@@ -2995,8 +3217,9 @@
 
   function noteCard(n) {
     if (state.noteEdit && state.noteEdit.id === n.id) return state.noteEdit.node; // keeps what you are typing
-    var node = el("article", "card note" + (n.pinned ? " is-pinned" : ""));
+    var node = el("article", "tile card note" + (n.pinned ? " is-pinned" : ""));
     node.setAttribute("data-note", n.id);
+    orgMark(node, n.space);
     node.appendChild(noteTop(n));
     var long = noteIsLong(n.body);
     var open = long && !!state.openNotes[n.id];
@@ -3240,8 +3463,9 @@
 
   // The tile turns into a small form, in place. The node is kept so that what you type survives redraws.
   function editLink(l) {
-    var node = el("div", "link-tile editing");
+    var node = el("div", "tile link-tile editing");
     node.setAttribute("data-link", l.id);
+    orgMark(node, l.space);
     var labelBox = el("input", "link-input");
     labelBox.type = "text";
     labelBox.maxLength = 60;
@@ -3282,20 +3506,23 @@
     var where = el("span", "link-host", href ? F.host(href) : "Address cannot be opened");
     if (!state.linksEditing) {
       if (!href) {
-        var dead = el("div", "link-tile dead");
+        var dead = el("div", "tile link-tile dead");
         dead.setAttribute("data-link", l.id);
+        orgMark(dead, l.space);
         dead.appendChild(label);
         dead.appendChild(where);
         return dead;
       }
-      var a = linkTo(href, "", "link-tile");
+      var a = linkTo(href, "", "tile link-tile");
       a.setAttribute("data-link", l.id);
+      orgMark(a, l.space);
       a.appendChild(label);
       a.appendChild(where);
       return a;
     }
-    var node = el("div", "link-tile editing");
+    var node = el("div", "tile link-tile editing");
     node.setAttribute("data-link", l.id);
+    orgMark(node, l.space);
     node.appendChild(label);
     node.appendChild(where);
     var actions = el("div", "actions");
@@ -3338,7 +3565,12 @@
       var shown = all.filter(function (l) { return hit([l.label, F.host(l.url)]); });
       if (!shown.length) return;
       var group = el("div", "link-group");
-      if (state.filter === "all") group.appendChild(el("h3", "link-group-name", s.label));
+      if (state.filter === "all") {
+        var gname = el("h3", "link-group-name");
+        gname.appendChild(orgDot(s.id));
+        gname.appendChild(document.createTextNode(s.label));
+        group.appendChild(gname);
+      }
       var grid = el("div", "link-grid");
       shown.forEach(function (l) { grid.appendChild(linkTile(l, all.indexOf(l), all.length)); });
       group.appendChild(grid);
@@ -3547,7 +3779,7 @@
 
   // The words under More on Today: the note and the task made from it.
   function keyPanel(k) {
-    var panel = el("div", "kd-panel");
+    var panel = el("div", "fold-body kd-panel");
     panel.appendChild(k.note ? el("p", "kd-note", String(k.note)) : el("p", "empty", "There is no note."));
     var row = el("div", "actions");
     if (k.task_id) {
@@ -3565,31 +3797,24 @@
   function keyLine(k, where, page) {
     if (where === "page" && state.kdEdit && sameId(state.kdEdit.id, k.id)) return keyForm(state.kdEdit, page, k);
     var open = k.status === "open";
-    var line = el("div", "kd-line kd-" + (open ? keyTone(k) : "plain"));
+    var tone = open ? keyTone(k) : "plain";
+    var r = makeRow("div", "kd-line kd-" + tone + (open ? "" : " is-quiet"), k.space);
+    var line = r.node;
     line.setAttribute("data-keydate", k.id);
-    var main = el("div", "kd-main");
-    var when = el("p", "kd-when");
-    when.appendChild(el("span", "kd-date", keyDate(k.on_date)));
-    if (k.status !== "done") when.appendChild(el("span", "kd-count", keyCount(daysTo(k.on_date))));
-    if (k.hard_limit) when.appendChild(el("span", "kd-last", "last day " + keyDay(k.hard_limit)));
-    main.appendChild(when);
-    main.appendChild(el("p", "kd-text", String(k.text || "")));
+    r.main.appendChild(el("p", "kd-text row-title", String(k.text || "")));
+    var sub = [];
     var proj = projectById(k.project_id);
     if (proj && where !== "page") {
-      var at = el("p", "kd-where");
-      at.appendChild(button(projectLabel(proj), "ref kd-project", function () { goToProject(proj); }));
-      main.appendChild(at);
+      sub.push(button(projectLabel(proj), "ref kd-project", function () { goToProject(proj); }));
     } else if (proj && where === "page" && page && !sameId(proj.id, page.id)) {
-      var inTopic = el("p", "kd-where");
-      inTopic.appendChild(el("span", "topic-chip", proj.name));
-      main.appendChild(inTopic);
+      sub.push(el("span", "topic-name", proj.name));
     }
-    if (k.status === "proposed") {
-      var found = el("p", "kd-where");
-      found.appendChild(el("span", "pill kd-found", "Found by the Desk"));
-      main.appendChild(found);
-    }
-    line.appendChild(main);
+    if (k.hard_limit) sub.push(el("span", "kd-last", "last day " + keyDay(k.hard_limit)));
+    rowSub(r, sub);
+    if (k.status === "proposed") r.state.appendChild(pill("Found by the Desk", "", "kd-found"));
+    else if (k.status === "done") r.state.appendChild(stateText("Done", "quiet"));
+    else r.state.appendChild(stateText(keyCount(daysTo(k.on_date)), tone === "late" ? "now" : tone === "warn" ? "soon" : "", "kd-count"));
+    r.date.appendChild(el("span", "kd-date", keyDate(k.on_date)));
 
     var actions = el("div", "kd-actions");
     var name = " (" + String(k.text || "").slice(0, 60) + ")";
@@ -3648,7 +3873,7 @@
     if (where === "page" && k.status === "done") {
       actions.appendChild(button("Reopen", "btn small subtle", function () { saveKey(k.id, { status: "open", done_at: null }); }));
     }
-    if (actions.children.length) line.appendChild(actions);
+    while (actions.firstChild) r.acts.appendChild(actions.firstChild);
     if (open && where === "cover" && state.kdMore[k.id]) line.appendChild(keyPanel(k));
     return line;
   }
@@ -3841,7 +4066,7 @@
     var done = mine.filter(function (k) { return k.status === "done"; }).sort(function (a, b) {
       return String(b.done_at || "") < String(a.done_at || "") ? -1 : String(b.done_at || "") > String(a.done_at || "") ? 1 : 0;
     });
-    var list = el("div", "kd-list");
+    var list = el("div", "rows kd-list");
     list.setAttribute("data-keydates", p ? p.id : "unsorted");
     if (!open.length && !proposed.length) list.appendChild(el("p", "empty", "You have no open key dates here."));
     open.forEach(function (k) { list.appendChild(keyLine(k, "page", p)); });
@@ -3851,7 +4076,8 @@
       var id = p ? String(p.id) : "unsorted";
       var fold = el("details", "kd-done");
       fold.appendChild(el("summary", null, "Done (" + done.length + ")"));
-      var body = foldIn(fold);
+      var body = el("div", "rows kd-done-list");
+      fold.appendChild(body);
       done.forEach(function (k) { body.appendChild(keyLine(k, "page", p)); });
       fold.open = !!state.kdDone[id];
       fold.addEventListener("toggle", function () { state.kdDone[id] = fold.open; });
@@ -3881,11 +4107,13 @@
     var limit = todayNumber() + KD_AHEAD;
     var rows = openKeys().filter(function (k) { return dayNumber(k.on_date) <= limit; });
     box.hidden = !rows.length && needles.length > 0;
-    var head = el("div", "tsec-head");
-    head.appendChild(el("h3", "tsec-name", "Key dates in the next " + KD_AHEAD + " days"));
-    if (rows.length) head.appendChild(el("span", "count", String(rows.length)));
-    box.appendChild(head);
-    var body = el("div", "tsec-body cv-pad");
+    var late = rows.filter(function (k) { return keyTone(k) === "late"; }).length;
+    var due = rows.filter(function (k) { return keyTone(k) === "warn"; }).length;
+    var extra = late ? stateText(late + " late", "now", "bar-time") : due ? stateText(due + " due", "soon", "bar-time")
+      : rows.length ? el("span", "bar-time meta", "next " + keyDay(rows[0].on_date)) : null;
+    var bar = makeBar("keydates", "Key dates in the next " + KD_AHEAD + " days", rows.length, extra, false, "project-keydates");
+    box.appendChild(bar.box);
+    var body = el("div", "rows kd-rows");
     if (!rows.length) {
       body.appendChild(el("p", "empty", "You have no key dates in the next " + KD_AHEAD + " days."));
     } else {
@@ -3900,7 +4128,7 @@
         body.appendChild(more);
       }
     }
-    box.appendChild(body);
+    bar.body.appendChild(body);
     return rows.length;
   }
 
@@ -3908,24 +4136,21 @@
 
   // "Coming up": open key dates whose warning has started (and those already past), soonest first.
   function renderCoverComing() {
-    var box = $("cv-coming");
     var open = openKeys();
     var rows = open.filter(keyInWindow);
     var later = open.length - rows.length;
     var proposed = proposedKeys();
-    box.textContent = "";
+    var box = $("cv-coming");
     box.hidden = !(rows.length || later || proposed.length);
-    if (box.hidden) return 0;
-    var head = el("div", "tsec-head");
-    head.appendChild(el("h2", "tsec-name", "Coming up"));
+    if (box.hidden) { box.textContent = ""; return 0; }
+    var blk = coverBlock("cv-coming", "Coming up", rows.length, "Projects", "projects");
     var overdue = rows.filter(function (k) { return keyTone(k) === "late"; }).length;
-    if (overdue) head.appendChild(el("span", "cv-late", overdue + " late"));
-    head.appendChild(el("span", "count", String(rows.length)));
-    box.appendChild(head);
-    var body = el("div", "tsec-body cv-pad");
-    if (!rows.length) body.appendChild(el("p", "empty", "Nothing is coming up yet."));
-    rows.forEach(function (k) { body.appendChild(keyLine(k, "cover", null)); });
-    box.appendChild(body);
+    var due = rows.filter(function (k) { return keyTone(k) === "warn"; }).length;
+    if (overdue) blk.state.appendChild(stateText(overdue + " late", "now", "cv-late"));
+    else if (due) blk.state.appendChild(stateText(due + " due", "soon", "cv-late"));
+    coverNeeds(blk, overdue + due > 0);
+    if (!rows.length) blk.body.appendChild(el("p", "empty", "Nothing is coming up yet."));
+    rows.forEach(function (k) { blk.body.appendChild(keyLine(k, "cover", null)); });
     if (later || proposed.length) {
       var foot = el("div", "cv-foot kd-foot");
       if (later) foot.appendChild(button(later + " more later", "quiet", function () { showView("projects"); }));
@@ -3939,7 +4164,7 @@
           reveal(onPage('[data-project="unsorted"]'));
         }));
       }
-      box.appendChild(foot);
+      blk.box.appendChild(foot);
     }
     return rows.length;
   }
@@ -3954,22 +4179,27 @@
     return state.filter === "all" || row.space === state.filter;
   }
 
-  // Empties one block of Today and writes its heading; returns the heading row and the body.
-  function coverBlock(id, name) {
+  // Empties one card of Today and writes its header: the title, a state, the count and a quiet link to the full view.
+  // Returns the parts; the body is a list of rows.
+  function coverBlock(id, name, count, linkLabel, view) {
     var box = $(id);
     box.textContent = "";
-    var head = el("div", "tsec-head");
+    box.classList.remove("cv-needs");
+    var head = el("div", "tsec-head cv-head");
     head.appendChild(el("h2", "tsec-name", name));
+    var st = el("span", "cv-state");
+    head.appendChild(st);
+    head.appendChild(el("span", "count", count === null || count === undefined ? "" : String(count)));
+    if (view) head.appendChild(button(linkLabel, "quiet cv-link", function () { showView(view); }));
     box.appendChild(head);
-    var body = el("div", "tsec-body");
+    var body = el("div", "tsec-body rows");
     box.appendChild(body);
-    return { box: box, head: head, body: body };
+    return { box: box, head: head, state: st, body: body };
   }
 
-  function coverFoot(box, label, view) {
-    var foot = el("div", "cv-foot");
-    foot.appendChild(button(label, "quiet", function () { showView(view); }));
-    box.appendChild(foot);
+  // A card with anything that needs you goes first on Today.
+  function coverNeeds(blk, needs) {
+    if (needs) blk.box.classList.add("cv-needs");
   }
 
   // The meetings that are running or still to come within 7 days, soonest first.
@@ -3991,35 +4221,38 @@
   }
 
   function renderNextUp(now) {
-    var blk = coverBlock("cv-next", "Next up");
+    var list = upcomingMeetings(now);
+    var blk = coverBlock("cv-next", "Next up", null, "Meetings", "meetings");
     var body = blk.body;
     body.className = "tsec-body cv-pad";
-    var list = upcomingMeetings(now);
     if (!list.length) {
       body.appendChild(el("p", "empty", "You have no meetings in the next 7 days."));
       return;
     }
     var m = list[0];
+    var next = el("div", "cv-meeting");
+    orgMark(next, m.space);
     var top = el("div", "cv-top");
-    top.appendChild(el("span", "tag tag-" + m.space, spaceLabel(m.space)));
+    top.appendChild(el("span", "cv-when", whenLabel(m, now)));
     var flag = timingFlag(m, now);
     if (flag) top.appendChild(flag);
-    if (RESPONSES[m.my_response]) top.appendChild(el("span", "flag flag-2", RESPONSES[m.my_response]));
-    body.appendChild(top);
-    body.appendChild(el("h3", "cv-title", m.title || "Meeting"));
-    body.appendChild(el("p", "cv-when", whenLabel(m, now)));
+    if (RESPONSES[m.my_response]) top.appendChild(stateText(RESPONSES[m.my_response], flag ? "" : "soon", "flag flag-2"));
+    next.appendChild(el("h3", "cv-title", m.title || "Meeting"));
+    next.appendChild(top);
+    coverNeeds(blk, !!flag);
     var who = withLine(m);
-    if (who) body.appendChild(el("p", "reason", who));
+    if (who) next.appendChild(el("p", "reason", who));
     var join = httpsLink(m.join_url);
     var cal = httpsLink(m.event_url);
     if (join || cal) {
       var actions = el("div", "actions");
       if (join) actions.appendChild(linkTo(join, "Join", "btn join big"));
       if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
-      body.appendChild(actions);
+      next.appendChild(actions);
     }
     var fold = meetingFold(m);
-    if (fold) body.appendChild(fold);
+    if (fold) next.appendChild(fold);
+    body.appendChild(next);
 
     var today = dayStart(new Date(now));
     var later = list.slice(1).filter(function (x) { return dayStart(meetingDate(x)) === today; });
@@ -4028,6 +4261,7 @@
       var ul = el("ul", "cv-later");
       later.forEach(function (x) {
         var li = el("li");
+        orgMark(li, x.space);
         li.setAttribute("data-later-meeting", x.id);
         li.appendChild(el("span", "cv-t", clock(meetingDate(x))));
         li.appendChild(el("span", "cv-n", x.title || "Meeting"));
@@ -4054,17 +4288,17 @@
   }
 
   function renderCoverTasks() {
-    var blk = coverBlock("cv-tasks", "Tasks today");
     var found = coverTaskList();
-    if (found.late) blk.head.appendChild(el("span", "cv-late", found.late + " late"));
-    if (found.urgent) blk.head.appendChild(el("span", "cv-late cv-urgent", found.urgent + " urgent"));
-    blk.head.appendChild(el("span", "count", found.all.length + " open"));
+    var blk = coverBlock("cv-tasks", "Tasks today", found.all.length + " open", "All tasks", "tasks");
+    blk.body.classList.add("with-check");
+    if (found.late) blk.state.appendChild(stateText(found.late + " late", "now", "cv-late"));
+    if (found.urgent) blk.state.appendChild(stateText(found.urgent + " urgent", found.late ? "" : "now", "cv-late cv-urgent"));
+    coverNeeds(blk, found.late + found.urgent > 0);
     var rows = needles.length ? found.all.filter(function (t) { return hit(taskParts(t)); }) : found.all;
     rows.slice(0, 6).forEach(function (t) { blk.body.appendChild(taskRow(t, "today")); });
     if (!found.all.length && !needles.length) {
       blk.body.appendChild(el("p", "empty", "Nothing is due today and nothing is late."));
     }
-    coverFoot(blk.box, "All tasks", "tasks");
     return Math.min(rows.length, 6);
   }
 
@@ -4083,11 +4317,12 @@
   }
 
   function renderCoverInbox() {
-    var blk = coverBlock("cv-inbox", "Inbox, most important");
     var list = coverInboxList();
+    var blk = coverBlock("cv-inbox", "Inbox, most important", list.length, "All inbox", "inbox");
+    var hot = list.filter(function (i) { return bucket(i) === "waiting" && i.urgency >= 2; }).length;
+    coverNeeds(blk, hot > 0);
     list.forEach(function (i) { blk.body.appendChild(card(i, bucket(i), "today")); });
     if (!list.length && !needles.length) blk.body.appendChild(el("p", "empty", "Nothing in your inbox is waiting on you."));
-    coverFoot(blk.box, "All inbox", "inbox");
     return list.length;
   }
 
@@ -4135,7 +4370,7 @@
   }
 
   function renderCoverReview() {
-    var blk = coverBlock("cv-review", "How things stand");
+    var blk = coverBlock("cv-review", "How things stand", null, null, null);
     blk.body.className = "tsec-body cv-pad";
     var spaces = state.filter === "all"
       ? ["metaculus", "cea", "personal"].filter(function (sp) { return sp !== "personal" || coverFor(sp); })
@@ -4152,7 +4387,9 @@
       }
       var org = el("div", "cv-org");
       org.setAttribute("data-cover", space);
-      var top = el("div", "cv-top");
+      org.classList.add("org", "org-" + space);
+      var top = el("h3", "cv-org-name");
+      top.appendChild(orgDot(space));
       top.appendChild(el("span", "tag tag-" + space, spaceLabel(space)));
       org.appendChild(top);
       if (!row) {
@@ -4163,7 +4400,7 @@
           var ul = el("ul", "cv-points");
           points.forEach(function (p) {
             var li = el("li", "cv-point");
-            li.appendChild(el("span", "kind cv-kind-" + (KIND_TAGS[p.kind] ? p.kind : "heads_up"), KIND_TAGS[p.kind] || "Heads-up"));
+            li.appendChild(el("span", "pill cv-kind cv-kind-" + (KIND_TAGS[p.kind] ? p.kind : "heads_up"), KIND_TAGS[p.kind] || "Heads-up"));
             var go = pointTarget(p.ref);
             if (go) li.appendChild(button(String(p.text), "ref cv-ref", go));
             else li.appendChild(el("span", "cv-plain", String(p.text)));
@@ -5520,45 +5757,42 @@
     return box;
   }
 
-  function runCard(run) {
-    var node = el("article", "card run run-" + run.status);
-    node.setAttribute("data-run", run.id);
-    var top = el("div", "card-top");
-    top.appendChild(el("span", "tag tag-" + run.space, spaceLabel(run.space)));
-    top.appendChild(el("span", "pill run-st-" + run.status, RUN_STATUS[run.status] || String(run.status)));
-    top.appendChild(el("span", "meta run-cost", money(run.cost_usd)));
-    var finished = !RUN_ACTIVE[run.status] && run.status !== "planned";
-    if (finished) {
-      var secs = took(run);
-      if (secs) top.appendChild(el("span", "meta", "took " + secs));
-      if (run.finished_at) top.appendChild(el("span", "meta", ago(run.finished_at)));
-    }
-    node.appendChild(top);
-    node.appendChild(el("h3", "title", run.title || "Untitled run"));
-    if ((run.status === "working" || run.status === "queued") && trimmed(run.current_step)) node.appendChild(el("p", "reason run-step-line", trimmed(run.current_step)));
-
-    var fold = el("details", "message run-fold");
-    fold.appendChild(el("summary", null, "Details"));
-    foldIn(fold).appendChild(runDetails(run));
-    fold.open = !!state.runOpen[run.id];
-    fold.addEventListener("toggle", function () {
-      if (fold.open) { state.runOpen[run.id] = true; markSeen(run.id); renderCoverWork(); } else delete state.runOpen[run.id];
-    });
-    node.appendChild(fold);
-    return node;
+  // The status of a run as state text: what needs you is red, what is going on is plain, what is over is quiet.
+  function runState(run) {
+    var tone = run.status === "needs_you" || run.status === "failed" ? "now" : run.status === "done" || run.status === "stopped" ? "quiet" : "";
+    return stateText(RUN_STATUS[run.status] || String(run.status), tone, "run-st run-st-" + run.status);
   }
 
-  function runGroup(id, name, rows) {
-    var box = el("div", "tsec");
-    box.setAttribute("data-group", id);
-    var head = el("div", "tsec-head");
-    head.appendChild(el("h3", "tsec-name", name));
-    head.appendChild(el("span", "count", String(rows.length)));
-    box.appendChild(head);
-    var body = el("div", "tsec-body run-list-body");
-    rows.forEach(function (r) { body.appendChild(runCard(r)); });
-    box.appendChild(body);
-    return box;
+  // A run as a row: the title and its current step, the status, the cost and the time. Opening it shows everything.
+  function runCard(run) {
+    var isOpen = !!state.runOpen[run.id];
+    var finished = !RUN_ACTIVE[run.status] && run.status !== "planned";
+    var r = makeRow("article", "card run run-" + run.status + (run.status === "done" || run.status === "stopped" ? " is-quiet" : ""), run.space);
+    var node = r.node;
+    node.setAttribute("data-run", run.id);
+    var title = button(run.title || "Untitled run", "title row-title", function () {});
+    r.main.appendChild(title);
+    var step = (run.status === "working" || run.status === "queued") && trimmed(run.current_step) ? el("span", "run-step-line", trimmed(run.current_step)) : null;
+    var secs = finished ? took(run) : "";
+    rowSub(r, [step, secs ? el("span", "run-took", "took " + secs) : null]);
+    r.state.appendChild(runState(run));
+    var when = finished ? run.finished_at : run.updated_at;
+    if (when) r.date.appendChild(el("span", "when-ago", ago(when)));
+    var cost = el("span", "run-cost", money(run.cost_usd));
+    cost.setAttribute("aria-label", "Cost " + money(run.cost_usd));
+    r.count.appendChild(cost);
+    rowOpens(r, title, isOpen, function () {
+      if (state.runOpen[run.id]) delete state.runOpen[run.id]; else { state.runOpen[run.id] = true; markSeen(run.id); }
+      render();
+      var t = onPage('[data-run="' + run.id + '"] .row-title');
+      if (t) t.focus({ preventScroll: true });
+    });
+    if (isOpen) {
+      var box = el("div", "fold-body run-fold");
+      box.appendChild(runDetails(run));
+      node.appendChild(box);
+    }
+    return node;
   }
 
   // The Work view; returns how many runs it shows.
@@ -5577,17 +5811,26 @@
 
     var shown = needles.length ? mine.filter(function (r) { return hit(runParts(r)); }) : mine;
     var newestFirst = function (a, b) { return (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0); };
-    var needs = shown.filter(function (r) { return r.status === "needs_you"; }).sort(newestFirst);
+    // A failed run needs you too: it comes after the runs that are asking you something.
+    var needs = shown.filter(function (r) { return r.status === "needs_you"; }).sort(newestFirst)
+      .concat(shown.filter(function (r) { return r.status === "failed"; }).sort(newestFirst).slice(0, 20));
     var rank = { working: 0, queued: 1, planned: 2 };
     var going = shown.filter(function (r) { return rank[r.status] !== undefined; }).sort(function (a, b) {
       return rank[a.status] - rank[b.status] || newestFirst(a, b);
     });
-    var done = shown.filter(function (r) { return r.status === "done" || r.status === "failed" || r.status === "stopped"; }).sort(function (a, b) {
+    var done = shown.filter(function (r) { return r.status === "done" || r.status === "stopped"; }).sort(function (a, b) {
       return (Date.parse(b.finished_at || b.updated_at) || 0) - (Date.parse(a.finished_at || a.updated_at) || 0);
     }).slice(0, 20);
-    if (needs.length) list.appendChild(runGroup("needs", "Needs you", needs));
-    if (going.length) list.appendChild(runGroup("going", "In progress", going));
-    if (done.length) list.appendChild(runGroup("done", "Finished", done));
+    var group = function (id, level, name, rows) {
+      if (!rows.length) return;
+      var g = attnGroup(level, name, rows.length, "work");
+      g.box.setAttribute("data-group", id);
+      rows.forEach(function (r) { g.body.appendChild(runCard(r)); });
+      list.appendChild(g.box);
+    };
+    group("needs", "needs", "Needs you", needs);
+    group("going", "active", "In progress", going);
+    group("done", "quiet", "Finished", done);
     var count = needs.length + going.length + done.length;
     if (!count && !needles.length) list.appendChild(el("p", "empty", "Nothing is running. Press Plan on a task to have the Desk do it in the background."));
     return count;
@@ -5617,23 +5860,18 @@
     box.hidden = !rows.length;
     box.textContent = "";
     if (!rows.length) return 0;
-    var head = el("div", "tsec-head");
-    head.appendChild(el("h2", "tsec-name", "Work in progress"));
-    head.appendChild(el("span", "count", String(rows.length)));
-    box.appendChild(head);
-    var body = el("div", "tsec-body cv-pad");
-    var ul = el("ul", "cv-runs");
+    var blk = coverBlock("cv-work", "Work in progress", rows.length, "All work", "work");
+    var needs = rows.filter(function (r) { return r.status === "needs_you" || r.status === "failed"; }).length;
+    coverNeeds(blk, needs > 0);
     rows.slice(0, 6).forEach(function (r) {
-      var li = el("li", "cv-run");
-      li.setAttribute("data-cover-run", r.id);
-      li.appendChild(button(r.title || "Untitled run", "ref cv-ref", function () { goToRun(r); }));
-      li.appendChild(el("span", "pill run-st-" + r.status, RUN_STATUS[r.status] || String(r.status)));
-      if (r.status === "working" && trimmed(r.current_step)) li.appendChild(el("span", "cv-step", trimmed(r.current_step)));
-      ul.appendChild(li);
+      var row = makeRow("div", "cv-run" + (r.status === "done" || r.status === "stopped" ? " is-quiet" : ""), r.space);
+      row.node.setAttribute("data-cover-run", r.id);
+      row.main.appendChild(button(r.title || "Untitled run", "ref cv-ref row-title", function () { goToRun(r); }));
+      rowSub(row, [r.status === "working" && trimmed(r.current_step) ? el("span", "cv-step", trimmed(r.current_step)) : null]);
+      row.state.appendChild(runState(r));
+      row.date.appendChild(el("span", "when-ago", ago(r.finished_at || r.updated_at)));
+      blk.body.appendChild(row.node);
     });
-    body.appendChild(ul);
-    box.appendChild(body);
-    coverFoot(box, "All work", "work");
     return Math.min(rows.length, 6);
   }
 
@@ -5961,7 +6199,10 @@
   });
   FOLDS.forEach(function (id) {
     var fold = $(id);
-    fold.querySelector("summary").addEventListener("click", function () { state.folds[id] = !fold.open; });
+    fold.querySelector("summary").addEventListener("click", function () {
+      state.folds[id] = !fold.open;
+      if (!needles.length) setBar(id, state.folds[id]);
+    });
   });
 
   [false, true].forEach(function (quick) {
