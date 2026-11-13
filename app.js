@@ -5963,7 +5963,27 @@
       render();
       $("updated").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " · version " + VERSION;
     } catch (err) {
-      notice("Could not load the Desk: " + (err && err.message ? err.message : "unknown error") + ". Retrying.", true);
+      var why = err && err.message ? String(err.message) : "unknown error";
+      // The sign-in token ran out while the page was in the background: renew it and load again straight away.
+      if (/jwt|token is expired|invalid claim/i.test(why) && !state.renewing && typeof sb.auth.refreshSession === "function") {
+        state.renewing = true;
+        notice("Renewing your sign-in.", true);
+        sb.auth.refreshSession().then(function (r) {
+          state.renewing = false;
+          if (r && r.error) {
+            notice("Your sign-in has expired. Sign in again.", true);
+            sb.auth.signOut();
+          } else {
+            listen();
+            load();
+          }
+        }, function () {
+          state.renewing = false;
+          notice("Could not renew your sign-in. Check your connection; the Desk will try again.", true);
+        });
+      } else if (!state.renewing) {
+        notice("Could not load the Desk: " + why + ". Retrying.", true);
+      }
     } finally {
       state.loading = false;
       if (state.loadAgain) {
