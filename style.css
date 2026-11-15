@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 36)
+   Desk design system (version 37)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -529,9 +529,10 @@ code { font: 0.86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; ba
 .cv-org-name { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: var(--fs-body); }
 .cv-org-name .tag { font-weight: 600; color: var(--ink); }
 .cv-review-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.cv-points { list-style: none; margin: 8px 0 0; padding: 0; }
-.cv-point { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: var(--fs-body); }
-.cv-point .pill { flex: none; color: var(--muted); }
+/* The points line up in two columns: the kind labels share one column as wide as the widest label, so every text starts at the same place */
+.cv-points { list-style: none; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; row-gap: 8px; }
+.cv-point { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: baseline; font-size: var(--fs-body); }
+.cv-point .pill { justify-self: stretch; text-align: center; color: var(--muted); }
 .cv-point .cv-ref, .cv-point .cv-plain { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-body); }
 .cv-written { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; font-size: var(--fs-quiet); color: var(--muted); }
 .note-form.cv-pad { margin: 0; }
