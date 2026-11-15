@@ -2214,6 +2214,13 @@
 
   // ----- Cards and pages -----
 
+  // True when you added an update of your own after the last review: what that review flagged may no longer hold.
+  function reviewOvertaken(p) {
+    var at = stampOf(p.reviewed_at);
+    if (!at) return false;
+    return knownChanges(p).some(function (c) { return c.origin === "you" && stampOf(c.created_at) > at; });
+  }
+
   function lastChangeOf(p) {
     var rows = knownChanges(p);
     return rows.length ? rows[0] : null;
@@ -2354,7 +2361,7 @@
     // The review: projects only, not areas and not topics
     if (isTopLevel(p) && !isArea(p)) {
       inside.appendChild(label("Review"));
-      if (p.reviewed_at) inside.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at))));
+      if (p.reviewed_at) inside.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at)) + (reviewOvertaken(p) ? ". You have added an update since, so this review may be out of date." : "")));
       var steps = Array.isArray(review.next_steps) ? review.next_steps.filter(Boolean) : [];
       var suggested = openSuggestions(p, review, open);
       var sources = (Array.isArray(review.sources) ? review.sources : []).filter(function (x) { return x && x.label; });
@@ -2451,7 +2458,7 @@
     if (overdue) return { level: "needs", tone: "now", text: plural(overdue, "overdue task") };
     if (urgent) return { level: "needs", tone: "now", text: plural(urgent, "urgent task") };
     if (due) return { level: "needs", tone: "soon", text: "Key date " + (daysTo(due.on_date) === 0 ? "today" : "due, last day " + keyDay(due.hard_limit || due.on_date)) };
-    if (!isArea(p) && review.attention) return { level: "needs", tone: "soon", text: "Review: " + String(review.attention) };
+    if (!isArea(p) && review.attention && !reviewOvertaken(p)) return { level: "needs", tone: "soon", text: "Review: " + String(review.attention) };
     if (near) return { level: "needs", tone: "soon", text: "Key date " + keyCount(daysTo(near.on_date)) };
     var last = lastChangeOf(p);
     var week = localDay(new Date(Date.now() - 6 * DAY));
