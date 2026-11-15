@@ -70,6 +70,10 @@
     kdDone: {},       // project pages whose Done fold you opened
     kdAll: false,     // "Show all" is on in the Key dates list of the Projects tab
     addLine: null,    // { pageId, projectId, date, text, error, saving } while a line is being added
+    upd: {},          // project page id -> { text, date, about, error, saving }: the Add an update box
+    updEdit: null,    // { id, pageId, text, date, error, saving } while one of your updates is edited in place
+    updAsk: null,     // id of one of your updates you are being asked about removing
+    refresh: {},      // project page id -> { busy, again, rest, scratch, error }: its standing is being rewritten, or the last try failed
     openTasks: {},    // ids of tasks you expanded in the list
     openItems: {},    // ids of inbox items and suggestions you opened in their list
     openSections: { today: true, week: true, weeks: false, later: false }, // task sections you opened or closed
@@ -97,6 +101,9 @@
     startAsk: {},     // starts where you are being asked about writing it again
     startHold: {},    // ids of starts with a save on its way
     copied: {},       // starts whose draft was just copied
+    ins: {},          // "item:7" / "task:3" -> { text, busy, answer, error, addr, addrError }: the Tell the Desk what to do box
+    does: {},         // start id -> what the Desk said it will do ("What this does"), kept while the page is open
+    fwd: {},          // start id -> { phase: loading | ready | failed, to, note, reason, error }: who a prepared forward would go to
     sendFlow: {},     // "item:7" -> { phase: checking | confirm | blocked | failed | sending, text, to, reason, error } while a reply is being sent
     sent: {},         // start id -> { at, to } for replies sent from this page (a load also brings sent_at)
     fresh: { starts: {}, covers: {}, runs: {} }, // rows just received from a function, kept until a load has them too
@@ -770,6 +777,7 @@
         actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
       }
       if (actions.children.length) box.appendChild(actions);
+      if (canStart && !startShown("item", item.id)) box.appendChild(instructBox("item", item.id, where));
       node.appendChild(box);
     }
     if (canStart) {
@@ -967,9 +975,25 @@
     try { if (saved.start !== null && saved.start !== undefined) n.setSelectionRange(saved.start, saved.end); } catch (_) { /* a date or number box has no cursor */ }
   }
 
+  // A box marked data-keep (your update, an instruction, an address) keeps its cursor when the page is redrawn under it.
+  function captureKeepFocus() {
+    var a = document.activeElement;
+    if (!a || !a.getAttribute || !a.getAttribute("data-keep")) return null;
+    return { id: a.getAttribute("data-keep"), start: a.selectionStart, end: a.selectionEnd };
+  }
+
+  function restoreKeepFocus(saved) {
+    if (!saved) return;
+    var n = onPage('[data-keep="' + saved.id + '"]');
+    if (!n || n === document.activeElement) return;
+    n.focus({ preventScroll: true });
+    try { if (saved.start !== null && saved.start !== undefined) n.setSelectionRange(saved.start, saved.end); } catch (_) { /* a date box has no cursor */ }
+  }
+
   function render() {
     var typing = captureDraftFocus();
     var keyFocus = captureKeyFocus();
+    var keepFocus = captureKeepFocus();
     markLooked();
     needles = plain(state.query).split(/\s+/).filter(Boolean);
     var searching = needles.length > 0;
@@ -1094,6 +1118,7 @@
     });
     restoreDraftFocus(typing);
     restoreKeyFocus(keyFocus);
+    restoreKeepFocus(keepFocus);
   }
 
   // ---------- Meetings ----------
@@ -1690,6 +1715,11 @@
       line.appendChild(fixForm(c, where));
       return line;
     }
+    var yours = where === "log" && page && c.origin === "you"; // only your own lines can be edited or removed
+    if (yours && state.updEdit && sameId(state.updEdit.id, c.id)) {
+      line.appendChild(updateEditForm(c));
+      return line;
+    }
     var body = el("p", "change-body");
     body.appendChild(el("span", "change-text", String(c.text || "")));
     var href = httpsLink(c.source_url);
@@ -1700,6 +1730,10 @@
       body.appendChild(el("span", "fine change-source", " " + String(c.source_label)));
     }
     line.appendChild(body);
+    if (yours) {
+      line.appendChild(yourLineActions(c, page));
+      return line;
+    }
     var fixBtn = button("Correct", "quiet change-correct", function () {
       state.fix = { id: c.id, where: where, text: String(c.text || ""), error: "" };
       render();
@@ -1860,6 +1894,324 @@
     }
   }
 
+  // ----- Your own updates, and rewriting how things stand -----
+  // An update you write is saved in project_changes (origin "you"), then the project-refresh function rewrites the
+  // standing and the Open now list from the log. An update on a topic also refreshes its parent, whose text covers its topics.
+  // Nothing here sends anything. What comes back is shown as text only.
+
+  var UPDATE_MAX = 600;
+  var REFRESH_FAIL = "The Desk could not rewrite it just now.";
+
+  function updateForm(p) {
+    var f = state.upd[p.id];
+    if (!f) f = state.upd[p.id] = { text: "", date: localDay(), about: String(p.id), error: "", saving: false };
+    return f;
+  }
+
+  // The projects to rewrite after a change on `owner`: the owner, then its parent.
+  function refreshChain(owner) {
+    var up = parentOf(owner);
+    return up ? [owner.id, up.id] : [owner.id];
+  }
+
+  function changeById(id) {
+    var all = (state.changes || []).slice();
+    Object.keys(state.log).forEach(function (k) { all = all.concat(state.log[k].rows); });
+    return all.filter(function (c) { return sameId(c.id, id); })[0] || null;
+  }
+
+  // The words for a text and a date typed into one of the update boxes; "" when both are fine.
+  function updateProblem(text, day) {
+    if (!text) return "Write the update first.";
+    if (text.length > UPDATE_MAX) return "Keep the update to " + UPDATE_MAX + " characters or fewer.";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day || "")) return "Choose the date of the update.";
+    if (day > localDay()) return "The date cannot be in the future.";
+    return "";
+  }
+
+  // Asks project-refresh to rewrite how things stand for each project in `ids`, one after the other. Only one
+  // rewrite runs per page: a request made meanwhile is remembered and runs when the first is done. The page stays usable.
+  async function refreshProjects(pageId, ids, scratch) {
+    var cur = state.refresh[pageId];
+    if (cur && cur.busy) {
+      if (scratch) return;
+      ids.forEach(function (id) { if (cur.next.indexOf(id) < 0) cur.next.push(id); });
+      return;
+    }
+    var rest = ids.slice();
+    if (cur && cur.rest && !scratch) cur.rest.forEach(function (id) { if (rest.indexOf(id) < 0) rest.unshift(id); }); // a failed try is not forgotten
+    var job = { busy: true, next: [], rest: rest, scratch: !!scratch, error: "" };
+    state.refresh[pageId] = job;
+    render();
+    while (job.rest.length) {
+      var body = { project_id: job.rest[0] };
+      if (scratch) body.from_scratch = true;
+      var res;
+      try {
+        res = await sb.functions.invoke("project-refresh", { body: body });
+      } catch (e) {
+        res = { error: e };
+      }
+      var d = res && !res.error ? res.data : null;
+      if (d && d.ok === true && typeof d.standing === "string" && Array.isArray(d.open_now)) {
+        var target = projectById(job.rest[0]);
+        if (target) {
+          target.standing = d.standing;
+          target.open_now = d.open_now.filter(function (x) { return typeof x === "string"; });
+        }
+        job.rest.shift();
+        if (job.rest.length) render();
+      } else {
+        job.error = (await failureWords(res, REFRESH_FAIL)).words;
+        break;
+      }
+    }
+    job.busy = false;
+    var more = job.next.slice().sort(function (a, b) { return sameId(a, pageId) ? 1 : sameId(b, pageId) ? -1 : 0; });
+    if (job.error) {
+      job.next = [];
+      render();
+    } else if (more.length) {
+      delete state.refresh[pageId];
+      refreshProjects(pageId, more, false);
+    } else {
+      delete state.refresh[pageId];
+      render();
+    }
+  }
+
+  function standingNote(p) {
+    var job = state.refresh[p.id];
+    if (!job) return null;
+    if (job.busy) {
+      var wait = el("p", "run-busy refresh-busy", "Rewriting how things stand...");
+      wait.setAttribute("role", "status");
+      return wait;
+    }
+    var bad = el("p", "error refresh-error", "Your change is saved, but how things stand was not rewritten. " + job.error + " ");
+    bad.setAttribute("role", "alert");
+    bad.appendChild(button("Try again", "btn small", function () { refreshProjects(p.id, job.rest, job.scratch); }));
+    return bad;
+  }
+
+  async function addUpdate(p) {
+    var f = updateForm(p);
+    if (f.saving) return;
+    var owner = projectById(f.about) || p;
+    var text = String(f.text || "").trim();
+    var problem = updateProblem(text, f.date);
+    if (problem) { f.error = problem; render(); return; }
+    f.saving = true;
+    f.error = "";
+    render();
+    var res = await sb.from("project_changes")
+      .insert({ project_id: owner.id, space: owner.space, changed_on: f.date, text: text, origin: "you" })
+      .select(CHANGE_COLS).single();
+    if (res.error || !res.data) {
+      f.saving = false;
+      f.error = "Not saved: " + (res.error ? res.error.message : "unknown error");
+      render();
+      return;
+    }
+    delete state.upd[p.id];
+    state.changes = (state.changes || []).concat([res.data]).sort(newestChange);
+    if (state.log[p.id]) state.log[p.id].rows = state.log[p.id].rows.concat([res.data]).sort(newestChange);
+    render();
+    refreshProjects(p.id, refreshChain(owner), false);
+  }
+
+  function updateBox(inside, p) {
+    var f = updateForm(p);
+    var box = el("form", "change-add update-box");
+    box.noValidate = true; // the page says what is wrong in its own words
+    box.setAttribute("data-update-box", p.id);
+    var tl = el("label", "upd-label", "Add an update");
+    tl.setAttribute("for", "upd-text-" + p.id);
+    box.appendChild(tl);
+    var ta = document.createElement("textarea");
+    ta.id = "upd-text-" + p.id;
+    ta.setAttribute("data-keep", "upd-text-" + p.id);
+    ta.rows = 2;
+    ta.maxLength = UPDATE_MAX;
+    ta.placeholder = "I sent the acceptance request on Friday";
+    ta.value = f.text;
+    ta.addEventListener("input", function () { f.text = ta.value; });
+    box.appendChild(ta);
+    var row = el("div", "td-row upd-row");
+    var topics = topicsOf(p);
+    if (topics.length) {
+      var whoBox = el("div");
+      var wl = el("label", null, "About");
+      wl.setAttribute("for", "upd-about-" + p.id);
+      var who = document.createElement("select");
+      who.id = "upd-about-" + p.id;
+      [p].concat(topics).forEach(function (x) {
+        var o = el("option", null, x === p ? p.name : "Topic: " + x.name);
+        o.value = String(x.id);
+        who.appendChild(o);
+      });
+      who.value = f.about;
+      who.addEventListener("change", function () { f.about = who.value; });
+      whoBox.appendChild(wl);
+      whoBox.appendChild(who);
+      row.appendChild(whoBox);
+    }
+    var dateBox = el("div");
+    var dl = el("label", null, "Date");
+    dl.setAttribute("for", "upd-date-" + p.id);
+    var date = document.createElement("input");
+    date.type = "date";
+    date.id = "upd-date-" + p.id;
+    date.max = localDay();
+    date.value = f.date;
+    date.addEventListener("input", function () { f.date = date.value; });
+    dateBox.appendChild(dl);
+    dateBox.appendChild(date);
+    row.appendChild(dateBox);
+    box.appendChild(row);
+    if (f.error) {
+      var bad = el("p", "error", f.error);
+      bad.setAttribute("role", "alert");
+      box.appendChild(bad);
+    }
+    var actions = el("div", "actions");
+    var add = el("button", "primary small", f.saving ? "Saving..." : "Add update");
+    add.type = "submit";
+    add.disabled = f.saving;
+    actions.appendChild(add);
+    box.appendChild(actions);
+    box.addEventListener("submit", function (event) { event.preventDefault(); addUpdate(p); });
+    inside.appendChild(box);
+
+    var job = state.refresh[p.id];
+    var scratch = el("div", "upd-scratch");
+    scratch.appendChild(el("p", "fine", "Rebuilds this text from the change log, your updates, open tasks and key dates only, ignoring the current wording."));
+    var again = button("Rewrite from scratch", "btn small subtle", function () { refreshProjects(p.id, [p.id], true); });
+    again.disabled = !!(job && job.busy);
+    scratch.appendChild(again);
+    inside.appendChild(scratch);
+  }
+
+  // Edit and Remove on a line of your own in the change log. Remove asks first, in the page's usual way.
+  function yourLineActions(c, page) {
+    var acts = el("div", "change-acts");
+    if (state.updAsk !== null && sameId(state.updAsk, c.id)) {
+      acts.appendChild(el("span", "note-ask", "Remove this update?"));
+      acts.appendChild(button("Yes, remove", "btn small danger", function () { removeUpdate(c, page); }));
+      acts.appendChild(button("Keep", "btn small", function () { state.updAsk = null; render(); }));
+      return acts;
+    }
+    var edit = button("Edit", "btn small subtle upd-edit", function () {
+      state.updAsk = null;
+      state.fix = null;
+      state.updEdit = { id: c.id, pageId: page.id, text: String(c.text || ""), date: c.changed_on, error: "", saving: false };
+      render();
+      var ta = onPage("#ue-text");
+      if (ta) ta.focus();
+    });
+    edit.setAttribute("aria-label", "Edit this update");
+    acts.appendChild(edit);
+    var rm = button("Remove", "btn small subtle upd-remove", function () {
+      state.updEdit = null;
+      state.updAsk = c.id;
+      render();
+    });
+    rm.setAttribute("aria-label", "Remove this update");
+    acts.appendChild(rm);
+    return acts;
+  }
+
+  function updateEditForm(c) {
+    var e = state.updEdit;
+    var form = el("form", "change-fix");
+    form.noValidate = true;
+    var ta = document.createElement("textarea");
+    ta.id = "ue-text";
+    ta.setAttribute("data-keep", "ue-text");
+    ta.className = "fix-text";
+    ta.rows = 2;
+    ta.maxLength = UPDATE_MAX;
+    ta.value = e.text;
+    ta.setAttribute("aria-label", "Your update");
+    ta.addEventListener("input", function () { e.text = ta.value; });
+    ta.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { event.preventDefault(); state.updEdit = null; render(); }
+    });
+    form.appendChild(ta);
+    var row = el("div", "td-row upd-row");
+    var dateBox = el("div");
+    var dl = el("label", null, "Date");
+    dl.setAttribute("for", "ue-date");
+    var date = document.createElement("input");
+    date.type = "date";
+    date.id = "ue-date";
+    date.max = localDay();
+    date.value = e.date;
+    date.addEventListener("input", function () { e.date = date.value; });
+    dateBox.appendChild(dl);
+    dateBox.appendChild(date);
+    row.appendChild(dateBox);
+    form.appendChild(row);
+    if (e.error) {
+      var bad = el("p", "error", e.error);
+      bad.setAttribute("role", "alert");
+      form.appendChild(bad);
+    }
+    var actions = el("div", "actions");
+    var save = el("button", "primary small", e.saving ? "Saving..." : "Save");
+    save.type = "submit";
+    save.disabled = e.saving;
+    actions.appendChild(save);
+    actions.appendChild(button("Cancel", "btn subtle small", function () { state.updEdit = null; render(); }));
+    form.appendChild(actions);
+    form.addEventListener("submit", function (event) { event.preventDefault(); saveUpdate(); });
+    return form;
+  }
+
+  async function saveUpdate() {
+    var e = state.updEdit;
+    if (!e || e.saving) return;
+    var row = changeById(e.id);
+    if (!row || row.origin !== "you") { state.updEdit = null; render(); return; } // only your own lines change here
+    var text = String(e.text || "").trim();
+    var problem = updateProblem(text, e.date);
+    if (problem) { e.error = problem; render(); return; }
+    e.saving = true;
+    e.error = "";
+    render();
+    var res = await sb.from("project_changes").update({ text: text, changed_on: e.date }).eq("id", e.id).eq("origin", "you");
+    if (res.error) {
+      e.saving = false;
+      e.error = "Not saved: " + res.error.message;
+      render();
+      return;
+    }
+    patchChange(e.id, { text: text, changed_on: e.date });
+    state.updEdit = null;
+    render();
+    var page = projectById(e.pageId);
+    var owner = projectById(row.project_id);
+    if (page && owner) refreshProjects(page.id, refreshChain(owner), false);
+  }
+
+  async function removeUpdate(c, page) {
+    var row = changeById(c.id);
+    state.updAsk = null;
+    if (!row || row.origin !== "you") { render(); return; } // only your own lines are removed here
+    var res = await sb.from("project_changes").delete().eq("id", c.id).eq("origin", "you").select("id");
+    if (res.error || !Array.isArray(res.data) || !res.data.length) {
+      notice("That update was not removed" + (res.error ? ": " + res.error.message : "."));
+      render();
+      return;
+    }
+    notice("");
+    state.changes = (state.changes || []).filter(function (x) { return !sameId(x.id, c.id); });
+    Object.keys(state.log).forEach(function (k) { state.log[k].rows = state.log[k].rows.filter(function (x) { return !sameId(x.id, c.id); }); });
+    render();
+    var owner = projectById(row.project_id);
+    if (owner) refreshProjects(page.id, refreshChain(owner), false);
+  }
+
   // ----- Cards and pages -----
 
   function lastChangeOf(p) {
@@ -1905,7 +2257,12 @@
     // Where it stands
     inside.appendChild(label("Where it stands"));
     var standing = standingText(p);
-    inside.appendChild(standing ? el("p", "gist pre", standing) : el("p", "empty", "Nothing is written down yet."));
+    var working = !!(state.refresh[p.id] && state.refresh[p.id].busy);
+    var standNode = standing ? el("p", "gist pre", standing) : el("p", "empty", "Nothing is written down yet.");
+    if (working) standNode.classList.add("is-working");
+    inside.appendChild(standNode);
+    var standNote = standingNote(p);
+    if (standNote) inside.appendChild(standNote);
 
     // Open now
     inside.appendChild(label("Open now"));
@@ -1913,10 +2270,12 @@
     if (now.length) {
       var ul = el("ul", "plan-steps open-now");
       now.forEach(function (t) { ul.appendChild(el("li", null, t)); });
+      if (working) ul.classList.add("is-working");
       inside.appendChild(ul);
     } else {
       inside.appendChild(el("p", "empty", "Nothing is listed as open right now."));
     }
+    updateBox(inside, p);
 
     keyDatesSection(inside, p);
 
@@ -2531,6 +2890,7 @@
     }
     if (!any) box.appendChild(el("p", "empty", "Nothing more written down yet."));
 
+    if (open && !startShown("task", task.id)) box.appendChild(instructBox("task", task.id, where));
     var actions = el("div", "actions");
     actions.appendChild(button("Edit", "btn", function () { openTask(task); }));
     if (open) {
@@ -2599,6 +2959,10 @@
       if (rowStart) r.acts.appendChild(rowStart);
     }
     if (isOpen) row.appendChild(taskDetails(task, row, where, all.slice(2)));
+    if (open && isOpen) {
+      var prepared = startPanel("task", task.id, where);
+      if (prepared) row.appendChild(prepared);
+    }
     if (open) {
       var planBox = planPanel(task, where);
       if (planBox) row.appendChild(planBox);
@@ -2953,11 +3317,12 @@
   }
 
   // `startSteps` are the steps of a Start; they are added to the ones the suggestion brings.
-  async function taskFromItem(item, trigger, startSteps) {
+  async function taskFromItem(item, trigger, startSteps, planNote) {
     var triggerLabel = trigger ? trigger.textContent : "";
     if (trigger) { trigger.disabled = true; trigger.textContent = "Working it out…"; }
     var task = blankTask(item.space, item.title);
     task.source_item_id = item.id;
+    task.planNote = planNote ? trimmed(planNote) : ""; // an instruction to carry into the plan once the task is saved
     task.due_on = item.due_on || null;
     task.context = item.summary || "";
     if (fromNotes(item)) {
@@ -2996,6 +3361,7 @@
     var title = $("td-title").value.trim();
     if (!title) return;
     var space = $("td-space").value;
+    var planAfter = null; // the new task to plan right after it is saved, with your instruction as the note
     try {
       var row = {
         space: space,
@@ -3019,6 +3385,9 @@
         if (draft.keyDateId) {
           res = await sb.from("tasks").insert(row).select("id").single();
           if (!res.error && res.data) await linkKeyTask(draft.keyDateId, res.data.id);
+        } else if (draft.planNote) {
+          res = await sb.from("tasks").insert(row).select("id").single();
+          if (!res.error && res.data) planAfter = { id: res.data.id, note: draft.planNote };
         } else {
           res = await sb.from("tasks").insert(row);
         }
@@ -3033,6 +3402,13 @@
     }
     $("task-dialog").close();
     await load();
+    if (planAfter) {
+      var made = state.tasks.filter(function (t) { return String(t.id) === String(planAfter.id); })[0];
+      if (made) {
+        goToTask(made);
+        planTask(made.id, null, planAfter.note);
+      }
+    }
   }
 
   // A notice that load() wrote is cleared by the next good load; a notice about a failed save stays
@@ -4882,7 +5258,7 @@
   // Asks the start-item function; it can take up to a minute. It prepares text only; nothing is sent.
   async function runStart(kind, id, redo) {
     var key = startKey(kind, id);
-    if (state.starting[key]) return;
+    if (state.starting[key] || (state.ins[key] && state.ins[key].busy)) return;
     if (redo && (sendBusy(key) || startSent(startFor(kind, id)))) return; // a draft that is being sent or was sent is never replaced
     state.starting[key] = true;
     delete state.startAsk[key];
@@ -4954,6 +5330,7 @@
     } else if (!locked && !ta._dirty && document.activeElement !== ta && ta.value !== (row.draft || "")) {
       ta.value = row.draft || "";
     }
+    ta.setAttribute("aria-label", isForward(row) ? "Note above the forwarded email" : "Draft reply");
     ta.readOnly = locked; // while a reply is being checked, confirmed or sent, or after it was sent, the words cannot change
     ta._startId = row.id;
     return ta;
@@ -5068,6 +5445,7 @@
   }
 
   function sendLabel(row) {
+    if (isForward(row)) return "Forward";
     return row.draft_kind === "email" ? "Send email" : "Send in Slack";
   }
 
@@ -5110,11 +5488,12 @@
     } else if (pv.can_send !== true) {
       flow.phase = "blocked";
       flow.reason = typeof pv.reason === "string" && pv.reason.trim() ? pv.reason.trim() : "This reply cannot be sent from here. Nothing was sent.";
-    } else if (typeof pv.recipient !== "string" || !pv.recipient.trim() || (pv.kind && row.draft_kind && pv.kind !== row.draft_kind)) {
+    } else if (typeof pv.recipient !== "string" || !pv.recipient.trim() || (isForward(row) ? pv.kind !== "forward" : (pv.kind === "forward" || (pv.kind && row.draft_kind && pv.kind !== row.draft_kind)))) {
       flow.phase = "failed";
-      flow.error = "The Desk could not confirm who would get this reply. Nothing was sent.";
+      flow.error = isForward(row) ? "The Desk could not confirm who would get this forward. Nothing was sent." : "The Desk could not confirm who would get this reply. Nothing was sent.";
     } else {
       flow.phase = "confirm";
+      flow.kind = isForward(row) ? "forward" : "reply";
       flow.text = text;
       flow.to = pv.recipient.trim();
       flow.note = typeof pv.note === "string" && pv.note.trim() ? pv.note.trim() : ""; // shown only; never added to the text
@@ -5172,6 +5551,10 @@
     var done = startSent(row);
     if (done) {
       var line = done.to ? "Sent " + noteDate(done.at) + " to " + done.to : "Sent " + noteDate(done.at);
+      if (isForward(row)) {
+        var who = done.to || forwardTarget(row);
+        line = (who ? "Forwarded to " + who + " · " : "Forwarded ") + noteDate(done.at);
+      }
       var ok = el("p", "send-sent", line);
       ok.setAttribute("role", "status");
       return ok;
@@ -5181,17 +5564,24 @@
     var box = el("div", "send-box");
     box.setAttribute("data-send-box", key);
     box.setAttribute("role", "group");
-    box.setAttribute("aria-label", "Send this reply");
+    var forwarding = flow.kind === "forward" || (flow.phase !== "confirm" && flow.phase !== "sending" && isForward(row));
+    box.setAttribute("aria-label", forwarding ? "Forward this email" : "Send this reply");
     box.tabIndex = -1;
     var close = function () { delete state.sendFlow[key]; render(); };
     var foot = el("div", "actions");
     if (flow.phase === "confirm" || flow.phase === "sending") {
       var sending = flow.phase === "sending";
-      box.appendChild(el("p", "send-ask", "Send this reply?"));
-      box.appendChild(el("p", "send-to", "To: " + flow.to));
+      if (flow.kind === "forward") {
+        box.appendChild(el("p", "send-ask", "Forward this email?"));
+        box.appendChild(el("p", "send-to", "Forward to: " + flow.to));
+        box.appendChild(el("p", "fine send-note-head", "Your note, above the forwarded email:"));
+      } else {
+        box.appendChild(el("p", "send-ask", "Send this reply?"));
+        box.appendChild(el("p", "send-to", "To: " + flow.to));
+      }
       box.appendChild(el("div", "send-text", flow.text));
       if (flow.note) box.appendChild(el("p", "fine send-note", flow.note));
-      var go = button(sending ? "Sending..." : "Send now", "primary", function () { sendNow(key, itemId); });
+      var go = button(flow.kind === "forward" ? (sending ? "Forwarding..." : "Forward now") : (sending ? "Sending..." : "Send now"), "primary", function () { sendNow(key, itemId); });
       go.disabled = sending;
       var back = button("Keep editing", "btn subtle", close);
       back.disabled = sending;
@@ -5207,13 +5597,256 @@
     return box;
   }
 
+  // ---------- Tell the Desk what to do ----------
+  // One box on every inbox item and every open task. What you type goes to the instruct function, which answers with a
+  // prepared reply or forward (stored as a start, then shown in the start panel and sent only by the Send flow above), a
+  // question about an address, a task that needs a plan, or a plain "cannot". Nothing here sends anything.
+
+  var INSTRUCT_MAX = 1000;
+  var INSTRUCT_FAIL = "The Desk could not prepare that. Nothing was sent.";
+
+  function isForward(row) { return !!row && row.action === "forward"; }
+
+  // "Name <address>" of a stored forward, for a start that was already sent.
+  function forwardTarget(row) {
+    var to = trimmed(row.forward_to);
+    var name = trimmed(row.forward_name);
+    if (!to) return "";
+    return name ? name + " <" + to + ">" : to;
+  }
+
+  function insState(key) {
+    if (!state.ins[key]) state.ins[key] = { text: "", busy: false, answer: null, error: "", addr: "", addrError: "" };
+    return state.ins[key];
+  }
+
+  // Asks who a prepared forward would go to, with the same read-only preview call that Forward uses. Sends nothing.
+  async function ensureForwardPreview(row, itemId) {
+    if (state.fwd[row.id]) return;
+    var entry = { phase: "loading" };
+    state.fwd[row.id] = entry;
+    var res;
+    try {
+      res = await sb.functions.invoke("send-reply", { body: { mode: "preview", item_id: itemId } });
+    } catch (e) {
+      res = { error: e };
+    }
+    if (state.fwd[row.id] !== entry) return;
+    var pv = res && !res.error && res.data && res.data.ok === true ? res.data.preview : null;
+    if (pv && typeof pv === "object" && pv.kind === "forward" && typeof pv.recipient === "string" && pv.recipient.trim()) {
+      entry.phase = "ready";
+      entry.to = pv.recipient.trim();
+      entry.canSend = pv.can_send === true;
+      entry.reason = typeof pv.reason === "string" ? pv.reason.trim() : "";
+    } else {
+      entry.phase = "failed";
+      entry.error = (await failureWords(res, "The Desk could not check who this would be forwarded to. Nothing was sent.")).words;
+    }
+    render();
+  }
+
+  // "Forward to: Name <address>", taken from the preview answer.
+  function forwardLine(kind, id, row) {
+    var itemId = row.item_id || (kind === "item" ? id : null);
+    if (itemId === null || itemId === undefined) return el("p", "send-to fwd-to", "Forward to: not known here");
+    ensureForwardPreview(row, itemId);
+    var f = state.fwd[row.id];
+    if (!f || f.phase === "loading") {
+      var wait = el("p", "send-to fwd-to", "Forward to: checking...");
+      wait.setAttribute("role", "status");
+      return wait;
+    }
+    if (f.phase === "failed") {
+      var bad = el("p", "error fwd-to", f.error + " ");
+      bad.setAttribute("role", "alert");
+      bad.appendChild(button("Try again", "btn small", function () { delete state.fwd[row.id]; render(); }));
+      return bad;
+    }
+    var line = el("p", "send-to fwd-to", "Forward to: " + f.to);
+    if (!f.canSend) line.appendChild(el("span", "fine", " " + (f.reason || "This cannot be forwarded from here.")));
+    return line;
+  }
+
+  async function runInstruct(kind, id, instruction, forwardTo) {
+    var key = startKey(kind, id);
+    var st = insState(key);
+    if (st.busy || state.starting[key] || sendBusy(key)) return;
+    var text = trimmed(instruction);
+    var asking = forwardTo !== undefined;
+    var address = trimmed(forwardTo);
+    if (asking && !address) { st.addrError = "Type an email address."; render(); return; }
+    if (!text) { st.error = "Write what you want done first."; render(); return; }
+    if (text.length > INSTRUCT_MAX) { st.error = "Keep it to " + INSTRUCT_MAX + " characters or fewer."; render(); return; }
+    st.busy = true;
+    st.error = "";
+    st.addrError = "";
+    if (!asking) st.answer = null;
+    render();
+    var body = kind === "item" ? { item_id: id, instruction: text } : { task_id: id, instruction: text };
+    if (asking) body.forward_to = address;
+    var res;
+    try {
+      res = await sb.functions.invoke("instruct", { body: body });
+    } catch (e) {
+      res = { error: e };
+    }
+    st.busy = false;
+    var d = res && !res.error ? res.data : null;
+    var does = d && typeof d.does === "string" ? d.does.trim() : "";
+    if (d && d.ok === true && (d.kind === "reply" || d.kind === "forward") && d.start && typeof d.start === "object" && d.start.id !== undefined) {
+      // The new start replaces the old one for this item or task, wherever the page keeps it.
+      var prev = startFor(kind, id);
+      [prev ? prev.id : null, d.start.id].forEach(function (sid) {
+        if (sid === null) return;
+        delete state.sent[sid];
+        delete state.fwd[sid];
+        delete state.does[sid];
+      });
+      delete state.sendFlow[key];
+      storeStart(d.start);
+      var at = startKey(d.start.item_id ? "item" : "task", d.start.item_id || d.start.task_id);
+      if (does) state.does[d.start.id] = does;
+      state.startOpen[at] = true;
+      delete state.startAsk[at];
+      st.answer = null;
+      st.text = "";
+      st.addr = "";
+    } else if (d && d.ok === true && d.kind === "forward_needs_address") {
+      var who = typeof d.forward_name === "string" ? d.forward_name.trim() : "";
+      st.answer = { kind: d.kind, does: does, name: who, instruction: text };
+    } else if (d && d.ok === true && (d.kind === "needs_work" || d.kind === "cannot")) {
+      st.answer = { kind: d.kind, does: does, instruction: text };
+      st.addr = "";
+    } else {
+      var f = await failureWords(res, INSTRUCT_FAIL);
+      if (asking) st.addrError = f.words; else st.error = f.words;
+    }
+    render();
+  }
+
+  // The answers that are not a stored start: a question about an address, the plan button, or a plain "cannot".
+  function instructAnswer(box, kind, id, where, st) {
+    var a = st.answer;
+    var wrap = el("div", "ins-answer");
+    wrap.appendChild(el("p", "fine ins-asked", "You asked: " + a.instruction));
+    if (a.does) wrap.appendChild(el("p", "gist pre ins-does", a.does));
+    if (a.kind === "forward_needs_address") {
+      var form = el("form", "ins-form ins-address");
+      var aid = "ins-addr-" + kind + "-" + id + "-" + where;
+      var lab = el("label", null, "Type " + (a.name || "their") + "'s address");
+      lab.setAttribute("for", aid);
+      var input = document.createElement("input");
+      input.type = "email";
+      input.id = aid;
+      input.setAttribute("data-keep", aid);
+      input.autocomplete = "off";
+      input.maxLength = 254;
+      input.value = st.addr;
+      input.readOnly = st.busy;
+      input.addEventListener("input", function () { st.addr = input.value; });
+      var go = el("button", "btn", st.busy ? "Preparing..." : "Prepare");
+      go.type = "submit";
+      go.disabled = st.busy;
+      form.appendChild(lab);
+      var line = el("div", "ins-line");
+      line.appendChild(input);
+      line.appendChild(go);
+      form.appendChild(line);
+      if (st.addrError) {
+        var bad = el("p", "error", st.addrError);
+        bad.setAttribute("role", "alert");
+        form.appendChild(bad);
+      }
+      form.addEventListener("submit", function (event) { event.preventDefault(); runInstruct(kind, id, a.instruction, st.addr); });
+      wrap.appendChild(form);
+    } else if (a.kind === "needs_work") {
+      var actions = el("div", "actions");
+      if (kind === "task") {
+        actions.appendChild(button("Plan this", "btn", function () {
+          st.answer = null;
+          planTask(id, plannedRunOf(id), a.instruction);
+        }));
+      } else {
+        var item = state.items.filter(function (i) { return String(i.id) === String(id); })[0];
+        var made = item ? taskFor(item) : null;
+        if (made) {
+          actions.appendChild(button("Plan this", "btn", function () {
+            st.answer = null;
+            planTask(made.id, plannedRunOf(made.id), a.instruction);
+            goToTask(made);
+          }));
+        } else if (item) {
+          var make = button("Make it a task and plan it", "btn", function () { taskFromItem(item, make, null, a.instruction); });
+          actions.appendChild(make);
+        }
+      }
+      if (actions.children.length) wrap.appendChild(actions);
+    }
+    box.appendChild(wrap);
+  }
+
+  function instructBox(kind, id, where) {
+    var key = startKey(kind, id);
+    var st = insState(key);
+    var locked = sendBusy(key) || !!state.starting[key];
+    var box = el("div", "ins-box");
+    box.setAttribute("data-instruct", key);
+    var fid = "ins-" + kind + "-" + id + "-" + where;
+    var lab = el("label", "upd-label", "Tell the Desk what to do");
+    lab.setAttribute("for", fid);
+    box.appendChild(lab);
+    var form = el("form", "ins-form");
+    var line = el("div", "ins-line");
+    var input = document.createElement("input");
+    input.type = "text";
+    input.id = fid;
+    input.setAttribute("data-keep", fid);
+    input.autocomplete = "off";
+    input.maxLength = INSTRUCT_MAX;
+    input.placeholder = "forward this to Ana and ask what she thinks, or reply that Thursday works";
+    input.value = st.text;
+    input.readOnly = st.busy || locked;
+    input.addEventListener("input", function () { st.text = input.value; });
+    var go = el("button", "btn", st.busy && !st.answer ? "Preparing..." : "Prepare");
+    go.type = "submit";
+    go.disabled = st.busy || locked;
+    line.appendChild(input);
+    line.appendChild(go);
+    form.appendChild(line);
+    form.addEventListener("submit", function (event) { event.preventDefault(); runInstruct(kind, id, st.text); });
+    box.appendChild(form);
+    if (st.busy) {
+      var wait = el("p", "run-busy ins-busy", "Working on it...");
+      wait.setAttribute("role", "status");
+      box.appendChild(wait);
+    }
+    if (st.error) {
+      var bad = el("p", "error ins-error", st.error);
+      bad.setAttribute("role", "alert");
+      box.appendChild(bad);
+    }
+    if (st.answer) instructAnswer(box, kind, id, where, st);
+    return box;
+  }
+
+  // The box sits on the item or task, or in its start panel once one is open (never both).
+  function startShown(kind, id) {
+    return !!startFor(kind, id) && !!state.startOpen[startKey(kind, id)];
+  }
+
   function startPanel(kind, id, where) {
     var key = startKey(kind, id);
     var row = startFor(kind, id);
     if (!row || !state.startOpen[key]) return null;
     var busy = !!state.starting[key];
+    var forward = isForward(row);
     var panel = el("div", "fold-body start-panel");
     panel.setAttribute("data-start-panel", key);
+    if (row.instruction) panel.appendChild(el("p", "fine ins-asked", "You asked: " + row.instruction));
+    if (state.does[row.id]) {
+      panel.appendChild(label("What this does"));
+      panel.appendChild(el("p", "gist pre ins-does", state.does[row.id]));
+    }
     if (row.summary) panel.appendChild(el("p", "gist pre", row.summary));
 
     var steps = (Array.isArray(row.steps) ? row.steps : []).filter(function (x) { return x && x.text; });
@@ -5257,17 +5890,21 @@
     if (actions.children.length) panel.appendChild(actions);
 
     if (row.draft !== null && row.draft !== undefined) {
-      var head = label("Draft reply");
-      if (row.draft_kind === "slack" || row.draft_kind === "email") {
+      var head = label(forward ? "Your note, above the forwarded email" : "Draft reply");
+      if (forward) {
+        head.appendChild(document.createTextNode(" "));
+        head.appendChild(el("span", "kind", "Forward"));
+      } else if (row.draft_kind === "slack" || row.draft_kind === "email") {
         head.appendChild(document.createTextNode(" "));
         head.appendChild(el("span", "kind", row.draft_kind === "slack" ? "Slack" : "Email"));
       }
       var sentNow = startSent(row);
       if (sentNow) {
         head.appendChild(document.createTextNode(" "));
-        head.appendChild(el("span", "kind sent-tag", "Sent"));
+        head.appendChild(el("span", "kind sent-tag", forward ? "Forwarded" : "Sent"));
       }
       panel.appendChild(head);
+      if (forward && !sentNow) panel.appendChild(forwardLine(kind, id, row));
       var ta = draftBox(key, where, row);
       panel.appendChild(ta);
       var tools = el("div", "actions");
@@ -5275,7 +5912,7 @@
       tools.appendChild(button(mark === "done" ? "Copied" : mark === "select" ? "Selected, now copy it" : "Copy", "btn", function () { copyDraft(key, ta); }));
       // Send exists only here: the panel of an inbox item or suggestion that has a message and a draft for it.
       var sendBtn = null;
-      if (kind === "item" && source && source.messages && (row.draft_kind === "email" || row.draft_kind === "slack") && !sentNow) {
+      if (kind === "item" && source && source.messages && (forward || row.draft_kind === "email" || row.draft_kind === "slack") && !sentNow) {
         var flow = state.sendFlow[key];
         var checking = !!flow && flow.phase === "checking";
         sendBtn = button(checking ? "Checking..." : sendLabel(row), "btn", function () { beginSend(key, id, ta); });
@@ -5287,7 +5924,9 @@
       panel.appendChild(tools);
       var box = sendBox(key, id, row);
       if (box) panel.appendChild(box);
-      panel.appendChild(el("p", "fine", "Nothing is sent until you press Send and confirm."));
+      if (forward) panel.appendChild(el("p", "fine", "The original email is forwarded with its attachments, with your note above it and your Gmail signature."));
+      if (forward && kind !== "item" && !sentNow) panel.appendChild(el("p", "fine", "To forward it, open the email in your inbox."));
+      panel.appendChild(el("p", "fine", forward ? "Nothing is sent until you press Forward and confirm." : "Nothing is sent until you press Send and confirm."));
       var hint = el("p", "fine", "Fill in the parts in [brackets] before you use it.");
       ta._refresh = function () {
         var open = hasBrackets(ta.value) && !sentNow;
@@ -5298,6 +5937,7 @@
       panel.appendChild(hint);
     }
 
+    if (kind === "item" || kind === "task") panel.appendChild(instructBox(kind, id, where));
     var foot = el("div", "actions");
     if (busy) {
       var wait = button("Preparing...", "btn subtle", function () {});
@@ -5308,7 +5948,7 @@
       foot.appendChild(button("Write again", "btn", function () { runStart(kind, id, true); }));
       foot.appendChild(button("Keep", "btn", function () { delete state.startAsk[key]; render(); }));
     } else {
-      if (!startSent(row) && !sendBusy(key)) foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
+      if (!startSent(row) && !sendBusy(key) && !forward) foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
       foot.appendChild(button("Hide", "btn subtle", function () { delete state.startOpen[key]; delete state.startAsk[key]; render(); }));
     }
     panel.appendChild(foot);
@@ -6265,7 +6905,7 @@
           .order("created_at", { ascending: false })
           .limit(500),
         sb.from("cover_reviews").select("space, review, points, written_at"),
-        sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at"),
+        sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at, instruction, action, forward_to, forward_name"),
         sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50),
         sb.from("quick_links").select(LINK_COLS).order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
         sb.from("project_changes").select(CHANGE_COLS).gte("changed_on", localDay(new Date(Date.now() - CHANGE_DAYS * DAY)))
@@ -6640,6 +7280,13 @@
         state.log = {};
         state.fix = null;
         state.addLine = null;
+        state.upd = {};
+        state.updEdit = null;
+        state.updAsk = null;
+        state.refresh = {};
+        state.ins = {};
+        state.does = {};
+        state.fwd = {};
         state.keyDates = [];
         state.kdForm = null;
         state.kdEdit = null;

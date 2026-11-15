@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 34)
+   Desk design system (version 35)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -831,3 +831,45 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   .row-title { min-height: 32px; }
 }
 .row-sub .kd-project, .row-sub .project-pill { min-height: 0; }
+
+/* ---------- Your updates, and Tell the Desk what to do ---------- */
+.upd-label { display: block; margin: 12px 0 4px; font-size: var(--fs-quiet); color: var(--muted); font-weight: 600; }
+.update-box { margin-top: 12px; }
+.update-box .upd-label:first-child { margin-top: 0; }
+.change-add textarea, .change-fix textarea, .ins-line input {
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--surface); line-height: 1.45;
+}
+.change-add input[type="date"], .change-add select, .change-fix input[type="date"] {
+  min-height: 36px; padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--surface);
+}
+.upd-row { margin-top: 8px; }
+.upd-row > div { flex: 0 1 200px; }
+.upd-row label { display: block; margin-bottom: 2px; font-size: var(--fs-quiet); color: var(--muted); }
+.is-working { color: var(--muted); }
+.refresh-error { margin: 8px 0 0; overflow-wrap: anywhere; }
+.upd-scratch { margin-top: 12px; }
+.upd-scratch .fine { margin: 0 0 4px; }
+.change-acts { display: flex; flex-wrap: wrap; align-items: center; justify-self: end; gap: 4px 8px; }
+.change-acts .btn { min-height: 32px; }
+.ins-box { margin-top: 12px; }
+.ins-box .upd-label:first-child { margin-top: 0; }
+.ins-line { display: flex; gap: 8px; align-items: stretch; }
+.ins-line input { flex: 1 1 auto; min-width: 0; min-height: 36px; padding-top: 4px; padding-bottom: 4px; }
+.ins-line input:read-only { background: transparent; color: var(--muted); }
+.ins-line .btn { flex: none; }
+.ins-answer { margin-top: 8px; }
+.ins-asked { margin: 0 0 4px; overflow-wrap: anywhere; }
+.ins-does { margin: 0 0 4px; }
+.ins-address label { display: block; margin: 8px 0 4px; font-size: var(--fs-quiet); color: var(--muted); font-weight: 600; }
+.ins-box .error, .ins-box .run-busy { margin: 8px 0 0; overflow-wrap: anywhere; }
+.fwd-to { overflow-wrap: anywhere; }
+.send-note-head { margin: 8px 0 0 !important; }
+@media (max-width: 600px) {
+  .ins-line { flex-wrap: wrap; }
+  .ins-line input { flex: 1 1 100%; min-height: 44px; font-size: 16px; }
+  .ins-line .btn { flex: 1 1 100%; min-height: 44px; }
+  .change-add textarea, .change-fix textarea, .change-add input[type="date"], .change-add select, .change-fix input[type="date"] { font-size: 16px; }
+  .change-add input[type="date"], .change-add select, .change-fix input[type="date"] { min-height: 44px; }
+  .upd-row > div { flex: 1 1 100%; }
+  .change-acts .btn { min-height: 40px; }
+}
