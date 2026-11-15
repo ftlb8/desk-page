@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 32)
+   Desk design system (version 34)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -25,6 +25,7 @@
    Actions have their own column (.row-acts) before the chevron: always visible, quiet (muted) until the row is hovered
    or focused. They never overlay anything. On a phone a row stacks: title and quiet line, state and date, and the
    actions on their own line at the bottom, right-aligned.
+   New since your last visit: a quiet "New" with a small dot (.new-mark) goes first in the quiet line of a row (or the head of a change line); it is never a pill and never coloured.
    Opening a row shows .fold-body under it: the same indent, background and chevron everywhere.
    Spacing 4/8/12/16/24; one radius for containers, one for controls; hairline borders; no shadows, no gradients.
    ========================================================================== */
@@ -516,6 +517,13 @@ code { font: 0.86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; ba
 .cv-join { flex: none; color: var(--accent); font-size: var(--fs-quiet); text-underline-offset: 3px; }
 .cv-foot { padding: 4px 14px 8px; border-top: 1px solid var(--line); }
 .kd-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.cv-new { margin: 16px 0 0; }
+.cv-new-body { padding: 4px 14px 12px; display: flex; flex-direction: column; gap: 8px; }
+.cv-new-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0 4px 12px; }
+.cv-new-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.cv-new-counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.new-mark { font-size: 0.75rem; font-weight: 600; color: var(--ink); }
+.new-mark::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: var(--muted); vertical-align: 0.08em; }
 .cv-org { padding-left: 12px; }
 .cv-org + .cv-org { margin-top: 16px; }
 .cv-org-name { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: var(--fs-body); }
@@ -593,8 +601,8 @@ textarea.start-draft:read-only { background: transparent; color: var(--muted); }
 .plan-steps { margin: 2px 0 0; padding-left: 20px; font-size: var(--fs-body); }
 .plan-links { margin: 8px 0 0; }
 .plan-task { margin-top: 2px; }
-.plan-suggest { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-.plan-suggest-text { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-body); }
+.plan-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+.plan-suggest-text { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-body); }
 .plan-suggest .btn { flex: none; }
 .plan-source { margin: 2px 0 0; font-size: var(--fs-body); overflow-wrap: anywhere; }
 .plan-note { margin-top: 8px; }
@@ -647,11 +655,15 @@ textarea.note-edit { margin-top: 8px; }
 .link-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 16px; }
 .link-form input, .link-form select, .link-input { min-width: 0; min-height: 36px; padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--surface); font-size: var(--fs-body); color: inherit; }
 .link-form input { flex: 1 1 180px; }
-.link-form select { flex: 0 1 180px; }
+.link-form select, .link-form #link-section { flex: 0 1 180px; }
 .link-form .primary { padding: 8px 20px; }
 .link-form .error { flex: 1 1 100%; margin: 0; }
 .link-group + .link-group { margin-top: 24px; }
 .link-group-name { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: var(--fs-quiet); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.link-section { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0 8px; }
+.link-section-name { margin: 0; font-size: var(--fs-quiet); font-weight: 600; color: var(--muted); }
+.link-section .link-input { flex: 1 1 180px; max-width: 320px; }
+.link-section .error { flex: 1 1 100%; margin: 0; }
 .link-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; align-items: stretch; }
 .link-tile { justify-content: center; gap: 2px; min-height: 64px; color: var(--ink); text-decoration: none; }
 a.link-tile:hover { border-top-color: var(--muted); border-right-color: var(--muted); border-bottom-color: var(--muted); }

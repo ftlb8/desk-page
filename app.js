@@ -51,6 +51,7 @@
     linksEditing: false, // the Edit toggle of the Links view
     linkEdit: null,   // { id, node } while a link is being edited in place
     linkAsk: null,    // id of the link you are being asked about removing
+    sectionEdit: null, // { space, name, node } while a section of links is being renamed in place
     linkSpace: null,  // the organisation you last added a link for in this session
     linkBusy: false,  // an add is on its way
     noteSpace: null,  // the organisation you last saved a note for in this session
@@ -672,6 +673,7 @@
     } else {
       meta = (promise ? "Promised to " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item);
     }
+    if (isNewItem(item) && (kind === "waiting" || kind === "commit")) sub.unshift(newMark());
     if (kind === "commit" && item.theme) sub.push(el("span", "theme-text", item.theme));
     sub.push(el("span", "meta", meta));
     // The gist, so the row gives its context without a click (opening the row shows it in full)
@@ -705,6 +707,7 @@
       else {
         var add = button("Add as task", "btn small", function () { taskFromItem(item, add); });
         r.acts.appendChild(add);
+        r.acts.appendChild(button("Dismiss", "btn small", function () { act(item.id, "dismiss"); }));
       }
     } else if (kind === "waiting" || kind === "look") {
       r.acts.appendChild(button("Done", "btn small", function () { act(item.id, "done"); }));
@@ -756,7 +759,6 @@
         if (startBtn) actions.appendChild(startBtn);
         actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
         actions.appendChild(laterControl(item, "btn subtle"));
-        actions.appendChild(button("Not a task", "btn subtle", function () { act(item.id, "dismiss"); }));
       } else if (kind === "waiting" || kind === "look") {
         if (taskFor(item)) {
           actions.appendChild(el("span", "made", "In your tasks"));
@@ -1501,12 +1503,45 @@
     return p.id + "\n" + String(text).trim().toLowerCase();
   }
 
+  // Review suggestions you dismissed, kept in this browser: { key: when } with the newest 500.
+  var DISMISSED_KEY = "desk.dismissedSuggestions";
+  var DISMISSED_MAX = 500;
+  var dismissedSug = null;
+
+  function dismissedSuggestions() {
+    if (dismissedSug) return dismissedSug;
+    var made = {};
+    try {
+      var parsed = JSON.parse(readPref(DISMISSED_KEY, "{}"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        Object.keys(parsed).forEach(function (k) { if (typeof parsed[k] === "number") made[k] = parsed[k]; });
+      }
+    } catch (_) { /* unreadable: start empty */ }
+    dismissedSug = made;
+    return made;
+  }
+
+  function dismissSuggestion(p, text) {
+    var all = dismissedSuggestions();
+    all[suggestionKey(p, text)] = Date.now();
+    var keys = Object.keys(all);
+    if (keys.length > DISMISSED_MAX) {
+      keys.sort(function (a, b) { return all[b] - all[a]; });
+      keys.slice(DISMISSED_MAX).forEach(function (k) { delete all[k]; });
+    }
+    writePref(DISMISSED_KEY, JSON.stringify(all));
+    render();
+  }
+
   // The review's suggested tasks, without the ones already a task on this project or already added this session.
   function openSuggestions(p, review, open) {
     var have = {};
     open.forEach(function (t) { have[String(t.title).trim().toLowerCase()] = true; });
     return (Array.isArray(review.suggested_tasks) ? review.suggested_tasks : []).map(function (x) { return String(x || "").trim(); })
-      .filter(function (text) { return text && !have[text.toLowerCase()] && !state.doneSuggestions[suggestionKey(p, text)]; });
+      .filter(function (text) {
+        var key = suggestionKey(p, text);
+        return text && !have[text.toLowerCase()] && !state.doneSuggestions[key] && !dismissedSuggestions()[key];
+      });
   }
 
   function suggestTask(p, text) {
@@ -1643,6 +1678,7 @@
     line.setAttribute("data-change", c.id);
     orgMark(line, c.space);
     var head = el("p", "change-head");
+    if (isNewChange(c)) head.appendChild(newMark());
     if (where === "log") head.appendChild(el("span", "meta change-date", changeDate(c.changed_on)));
     var owner = projectById(c.project_id);
     if (!page && owner) head.appendChild(el("span", "change-project", projectLabel(owner)));
@@ -1975,6 +2011,7 @@
           var row = el("div", "plan-suggest");
           row.appendChild(el("span", "plan-suggest-text", text));
           row.appendChild(button("Add as task", "btn small", function () { suggestTask(p, text); }));
+          row.appendChild(button("Dismiss", "btn small", function () { dismissSuggestion(p, text); }));
           inside.appendChild(row);
         });
       }
@@ -2080,7 +2117,7 @@
     r.main.appendChild(title);
     var topics = topicsOf(p);
     var standing = standingText(p).split("\n")[0];
-    rowSub(r, [topics.length ? (topics.length === 1 ? "1 topic" : topics.length + " topics") : null, standing ? el("span", "standing", standing) : null]);
+    rowSub(r, [isNewProject(p) ? newMark() : null, topics.length ? (topics.length === 1 ? "1 topic" : topics.length + " topics") : null, standing ? el("span", "standing", standing) : null]);
     r.state.appendChild(stateText(att.text, att.tone, att.changed && att.text === "Changed today" ? "changed-line is-today" : att.level === "quiet" ? "changed-line" : ""));
     var nextKey = keyDatesOf(p).filter(function (k) { return k.status === "open"; }).sort(byKeyDate)[0];
     if (nextKey) {
@@ -3304,6 +3341,7 @@
   function markLooked() {
     if (document.hidden) return;
     var now = Date.now();
+    writePref(VISIT_ACTIVE_KEY, String(now));
     SPACES.forEach(function (s) {
       if (s.id === "all" || (state.filter !== "all" && state.filter !== s.id)) return;
       lookedMemory[s.id] = now;
@@ -3342,9 +3380,188 @@
     });
   }
 
+
+  // ---------- New since your last visit ----------
+  // A visit starts when the page loads, or when it shows again after 30 minutes or more hidden. The moment you last looked
+  // at each organisation is taken then, before looking again overwrites it. It is kept in this browser, so a reload within
+  // the visit keeps the same moment. Nothing here touches the database.
+
+  var VISIT_KEY = "desk.visit";
+  var VISIT_ACTIVE_KEY = "desk.visit.active";
+  var VISIT_GAP = 30 * 60 * 1000;
+  var visitSince = {}; // organisation -> when you last looked before this visit; 0 or missing: nothing counts as new
+  var hiddenAt = 0;
+
+  function visitSpaces() {
+    return SPACES.filter(function (s) { return s.id !== "all"; }).map(function (s) { return s.id; });
+  }
+
+  function saveVisit() {
+    writePref(VISIT_KEY, JSON.stringify({ since: visitSince }));
+  }
+
+  // Must run before markLooked, which overwrites the moments it reads.
+  function beginVisit() {
+    visitSince = {};
+    visitSpaces().forEach(function (id) { visitSince[id] = lookedAt(id); });
+    saveVisit();
+  }
+
+  function startVisit() {
+    var saved = null;
+    try { saved = JSON.parse(readPref(VISIT_KEY, "")); } catch (_) { saved = null; }
+    var active = parseInt(readPref(VISIT_ACTIVE_KEY, ""), 10);
+    if (saved && saved.since && typeof saved.since === "object" && !isNaN(active) && Date.now() - active < VISIT_GAP) {
+      visitSince = {};
+      visitSpaces().forEach(function (id) { visitSince[id] = Number(saved.since[id]) || 0; });
+    } else {
+      beginVisit();
+    }
+  }
+
+  // Ends the comparison for the organisations in the filter: from now on only what comes later is new.
+  function markAllSeen() {
+    var now = Date.now();
+    visitSpaces().forEach(function (id) {
+      if (state.filter === "all" || state.filter === id) visitSince[id] = now;
+    });
+    saveVisit();
+    render();
+  }
+
+  function newSince(space) { return visitSince[space] || 0; }
+
+  function changeStamp(c) {
+    var t = stampOf(c.created_at);
+    if (t) return t;
+    var d = dayDate(c.changed_on);
+    return d ? new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() : 0;
+  }
+
+  function isNewChange(c) {
+    var since = newSince(c.space);
+    return !!since && c.origin !== "you" && changeStamp(c) > since;
+  }
+
+  function isNewItem(item) {
+    var since = newSince(item.space);
+    if (!since || stampOf(item.created_at) <= since) return false;
+    var b = bucket(item);
+    return b === "waiting" || b === "commit";
+  }
+
+  function runStamp(r) {
+    return r.status === "needs_you" ? stampOf(r.updated_at || r.finished_at)
+      : (r.status === "done" || r.status === "failed") ? stampOf(r.finished_at || r.updated_at) : 0;
+  }
+
+  function isNewRun(r) {
+    var since = newSince(r.space);
+    return !!since && runStamp(r) > since;
+  }
+
+  function isNewProject(p) {
+    return knownChanges(p).some(isNewChange);
+  }
+
+  // The small quiet marker that goes first in a row's quiet line.
+  function newMark() {
+    return el("span", "new-mark", "New");
+  }
+
+  // What is new in one organisation since the visit began, by kind.
+  function newCounts(space) {
+    var since = newSince(space);
+    var c = { need: 0, sug: 0, runNeed: 0, runDone: 0, changes: 0, keys: 0 };
+    if (!since) return c;
+    state.items.forEach(function (i) {
+      if (i.space !== space || stampOf(i.created_at) <= since) return;
+      var b = bucket(i);
+      if (b === "waiting") c.need++;
+      else if (b === "commit") c.sug++;
+    });
+    state.runs.forEach(function (r) {
+      if (r.space !== space || runStamp(r) <= since) return;
+      if (r.status === "needs_you") c.runNeed++; else c.runDone++;
+    });
+    c.changes = (state.changes || []).filter(function (x) { return x.space === space && projectById(x.project_id) && isNewChange(x); }).length;
+    c.keys = keyDatesNeedYouList(space, since).length;
+    return c;
+  }
+
+  // "yesterday 18:40", "today 09:05", "Mon 18:40" or "12 Nov 18:40".
+  function visitWords(ts) {
+    var d = new Date(ts);
+    var day = localDay(d);
+    var words = day === localDay() ? "today" : day === localDay(new Date(Date.now() - DAY)) ? "yesterday"
+      : Date.now() - ts < 6 * DAY ? d.toLocaleDateString([], { weekday: "short" }) : shortDate(d);
+    return words + " " + clock(d);
+  }
+
+  // The counts, each a button that goes to the view that shows them.
+  var NEW_KINDS = [
+    { key: "need", view: "inbox", text: function (n) { return n + (n === 1 ? " needs you" : " need you"); } },
+    { key: "sug", view: "tasks", text: function (n) { return n + (n === 1 ? " suggested task" : " suggested tasks"); } },
+    { key: "runNeed", view: "work", text: function (n) { return n + (n === 1 ? " run needs you" : " runs need you"); } },
+    { key: "runDone", view: "work", text: function (n) { return n + (n === 1 ? " run finished" : " runs finished"); } },
+    { key: "changes", view: "projects", text: function (n) { return n + (n === 1 ? " project update" : " project updates"); } },
+    { key: "keys", view: "projects", text: function (n) { return n + (n === 1 ? " key date needs you" : " key dates need you"); } },
+  ];
+
+  function goToNew(space, view) {
+    markLooked();
+    state.filter = space;
+    writePref("desk.space", space);
+    showView(view);
+  }
+
+  function renderCoverNew() {
+    var box = $("cv-new");
+    box.textContent = "";
+    var lines = [];
+    var latest = 0;
+    SPACES.forEach(function (s) {
+      if (s.id === "all" || (state.filter !== "all" && state.filter !== s.id)) return;
+      var c = newCounts(s.id);
+      var parts = NEW_KINDS.filter(function (k) { return c[k.key] > 0; });
+      if (!parts.length) return;
+      lines.push({ space: s, counts: c, parts: parts });
+      if (newSince(s.id) > latest) latest = newSince(s.id);
+    });
+    box.hidden = !lines.length;
+    if (!lines.length) return 0;
+    var head = el("div", "tsec-head cv-head");
+    head.appendChild(el("h2", "tsec-name", "New since your last visit"));
+    head.appendChild(el("span", "cv-state meta", "since " + visitWords(latest)));
+    head.appendChild(button("Mark all as seen", "quiet cv-link", markAllSeen));
+    box.appendChild(head);
+    var body = el("div", "tsec-body cv-new-body");
+    lines.forEach(function (ln) {
+      var row = el("div", "cv-new-line");
+      row.setAttribute("data-new", ln.space.id);
+      orgMark(row, ln.space.id);
+      var name = el("span", "cv-new-name");
+      name.appendChild(orgDot(ln.space.id));
+      name.appendChild(document.createTextNode(ln.space.label));
+      row.appendChild(name);
+      var since = newSince(ln.space.id);
+      if (Math.abs(since - latest) > 60000) row.appendChild(el("span", "meta cv-new-since", "since " + visitWords(since)));
+      var list = el("span", "cv-new-counts");
+      ln.parts.forEach(function (k) {
+        list.appendChild(button(k.text(ln.counts[k.key]), "btn small", function () { goToNew(ln.space.id, k.view); }));
+      });
+      row.appendChild(list);
+      body.appendChild(row);
+    });
+    box.appendChild(body);
+    return lines.length;
+  }
+
   // ---------- Links ----------
 
   var LINK_FAIL = "That did not save: ";
+  var LINK_COLS = "id, space, label, url, position, section, created_at";
+  var SECTION_MAX = 40;
 
   function linkOrder(a, b) {
     var ids = SPACES.map(function (s) { return s.id; });
@@ -3357,6 +3574,42 @@
 
   function linksOf(space) {
     return state.links.filter(function (l) { return l.space === space; }).sort(linkOrder);
+  }
+
+  // The sections of one organisation, in the order they show: links without a section first, then each section by the
+  // lowest position of its links. Each entry: { name, links } with the links in position order. Built from all the links.
+  function linkSections(space) {
+    var order = [];
+    var by = {};
+    linksOf(space).forEach(function (l) {
+      var name = l.section || "";
+      if (!by[name]) { by[name] = { name: name, links: [] }; order.push(by[name]); }
+      by[name].links.push(l);
+    });
+    return order.sort(function (a, b) {
+      if (!a.name !== !b.name) return a.name ? 1 : -1;
+      return 0; // stable: the first link of each section already came in position order
+    });
+  }
+
+  // The names of the sections that already exist in an organisation, for the suggestions in the Section box.
+  function fillSectionChoices(list, space) {
+    list.textContent = "";
+    if (!space) return;
+    linkSections(space).forEach(function (sec) {
+      if (!sec.name) return;
+      var o = el("option");
+      o.value = sec.name;
+      list.appendChild(o);
+    });
+  }
+
+  // Turns what you typed into a section name: trimmed text, or null when empty.
+  function cleanSection(text) {
+    var name = String(text || "").trim();
+    if (!name) return { section: null };
+    if (name.length > SECTION_MAX) return { error: "The section name can have at most " + SECTION_MAX + " characters; yours has " + name.length + "." };
+    return { section: name };
   }
 
   // Turns what you typed into a label and an https address, or says in plain words what is wrong.
@@ -3388,6 +3641,7 @@
       space.value = state.filter !== "all" ? state.filter : (state.linkSpace || "");
     }
     space.options[0].hidden = state.filter !== "all";
+    fillSectionChoices($("link-sections"), space.value);
   }
 
   function linkProblem(node, text, field) {
@@ -3404,11 +3658,15 @@
     var made = cleanLink($("link-label").value, $("link-url").value);
     if (made.error) { linkProblem(problem, made.error, $(made.field === "label" ? "link-label" : "link-url")); return; }
     if (!space) { linkProblem(problem, "Choose an organisation first.", $("link-space")); return; }
+    var kind = cleanSection($("link-section").value);
+    if (kind.error) { linkProblem(problem, kind.error, $("link-section")); return; }
     state.linkBusy = true;
     $("link-save").disabled = true;
     var mine = linksOf(space);
     var position = mine.length ? (mine[mine.length - 1].position || 0) + 1 : 0;
-    var res = await sb.from("quick_links").insert({ space: space, label: made.label, url: made.url, position: position }).select("id, space, label, url, position, created_at").single();
+    var row = { space: space, label: made.label, url: made.url, position: position };
+    if (kind.section) row.section = kind.section;
+    var res = await sb.from("quick_links").insert(row).select(LINK_COLS).single();
     state.linkBusy = false;
     $("link-save").disabled = false;
     if (res.error || !res.data) {
@@ -3424,26 +3682,41 @@
     await load();
   }
 
-  async function saveLinkEdit(l, labelBox, urlBox, problem) {
+  async function saveLinkEdit(l, labelBox, urlBox, sectionBox, problem) {
     var made = cleanLink(labelBox.value, urlBox.value);
     if (made.error) { linkProblem(problem, made.error, made.field === "label" ? labelBox : urlBox); return; }
+    var kind = cleanSection(sectionBox.value);
+    if (kind.error) { linkProblem(problem, kind.error, sectionBox); return; }
     problem.hidden = true;
-    var res = await sb.from("quick_links").update({ label: made.label, url: made.url }).eq("id", l.id);
+    var changes = { label: made.label, url: made.url };
+    var moved = (l.section || null) !== kind.section;
+    if (moved) {
+      // Into another section: it goes to the end of that section, and a section it starts goes last.
+      changes.section = kind.section;
+      var mine = linksOf(l.space);
+      var last = mine.length ? mine[mine.length - 1] : null;
+      changes.position = last && last !== l ? (last.position || 0) + 1 : (l.position || 0);
+    }
+    var res = await sb.from("quick_links").update(changes).eq("id", l.id);
     if (res.error) { linkProblem(problem, LINK_FAIL + res.error.message, null); return; }
     l.label = made.label;
     l.url = made.url;
+    if (moved) { l.section = kind.section; l.position = changes.position; }
     state.linkEdit = null;
     render();
     await load();
   }
 
-  // Swaps the link with its neighbour and rewrites the positions of that organisation's links as 0..n-1.
+  // Swaps the link with its neighbour in the same section and rewrites the positions of that organisation's links as 0..n-1.
   async function moveLink(l, step) {
     var mine = linksOf(l.space);
+    var inSection = mine.filter(function (x) { return (x.section || null) === (l.section || null); });
+    var near = inSection[inSection.indexOf(l) + step];
     var at = mine.indexOf(l);
-    var to = at + step;
-    if (at < 0 || to < 0 || to >= mine.length) return;
-    mine.splice(to, 0, mine.splice(at, 1)[0]);
+    var to = mine.indexOf(near);
+    if (at < 0 || !near || to < 0) return;
+    mine[at] = near;
+    mine[to] = l;
     var writes = [];
     mine.forEach(function (x, i) {
       if (x.position !== i) { x.position = i; writes.push(sb.from("quick_links").update({ position: i }).eq("id", x.id)); }
@@ -3480,11 +3753,21 @@
     urlBox.value = l.url;
     urlBox.setAttribute("inputmode", "url");
     urlBox.setAttribute("aria-label", "Address");
+    var sectionBox = el("input", "link-input");
+    sectionBox.type = "text";
+    sectionBox.maxLength = SECTION_MAX;
+    sectionBox.value = l.section || "";
+    sectionBox.placeholder = "Section (optional)";
+    sectionBox.setAttribute("aria-label", "Section");
+    sectionBox.setAttribute("list", "link-sections-edit");
+    var choices = el("datalist");
+    choices.id = "link-sections-edit";
+    fillSectionChoices(choices, l.space);
     var problem = el("p", "error");
     problem.setAttribute("role", "alert");
     problem.hidden = true;
-    var save = function () { saveLinkEdit(l, labelBox, urlBox, problem); };
-    [labelBox, urlBox].forEach(function (box) {
+    var save = function () { saveLinkEdit(l, labelBox, urlBox, sectionBox, problem); };
+    [labelBox, urlBox, sectionBox].forEach(function (box) {
       box.addEventListener("keydown", function (event) {
         if (event.key === "Enter") { event.preventDefault(); save(); }
         if (event.key === "Escape") { state.linkEdit = null; render(); }
@@ -3492,6 +3775,8 @@
     });
     node.appendChild(labelBox);
     node.appendChild(urlBox);
+    node.appendChild(sectionBox);
+    node.appendChild(choices);
     node.appendChild(problem);
     var row = el("div", "actions");
     row.appendChild(button("Save", "primary", save));
@@ -3547,6 +3832,58 @@
     return node;
   }
 
+  // Gives every link of a section in one organisation a new section name (an existing name joins the two).
+  async function renameSection(space, from, to, problem) {
+    var kind = cleanSection(to);
+    if (kind.error || !kind.section) { linkProblem(problem, kind.error || "Give the section a name.", null); return; }
+    if (kind.section === from) { state.sectionEdit = null; render(); return; }
+    problem.hidden = true;
+    var res = await sb.from("quick_links").update({ section: kind.section }).eq("space", space).eq("section", from);
+    if (res.error) { linkProblem(problem, LINK_FAIL + res.error.message, null); return; }
+    state.links.forEach(function (l) { if (l.space === space && l.section === from) l.section = kind.section; });
+    state.sectionEdit = null;
+    render();
+    await load();
+  }
+
+  // The heading of a section; in edit mode it has a Rename button that turns it into a small form, in place.
+  function sectionHead(space, name) {
+    var edit = state.sectionEdit;
+    if (edit && edit.space === space && edit.name === name) return edit.node;
+    var head = el("div", "link-section");
+    head.setAttribute("data-section", space + ":" + name);
+    head.appendChild(el("h4", "link-section-name", name));
+    if (state.linksEditing) {
+      head.appendChild(button("Rename", "btn small subtle", function () { editSection(space, name); }));
+    }
+    return head;
+  }
+
+  function editSection(space, name) {
+    var node = el("div", "link-section editing");
+    node.setAttribute("data-section", space + ":" + name);
+    var box = el("input", "link-input");
+    box.type = "text";
+    box.maxLength = SECTION_MAX;
+    box.value = name;
+    box.setAttribute("aria-label", "Section name");
+    var problem = el("p", "error");
+    problem.setAttribute("role", "alert");
+    problem.hidden = true;
+    var save = function () { renameSection(space, name, box.value, problem); };
+    box.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") { event.preventDefault(); save(); }
+      if (event.key === "Escape") { state.sectionEdit = null; render(); }
+    });
+    node.appendChild(box);
+    node.appendChild(button("Save", "primary small", save));
+    node.appendChild(button("Cancel", "btn small subtle", function () { state.sectionEdit = null; render(); }));
+    node.appendChild(problem);
+    state.sectionEdit = { space: space, name: name, node: node };
+    render();
+    box.focus();
+  }
+
   // Draws the Links view: the tiles of the chosen organisation, grouped by organisation under All. Returns how many tiles show.
   function renderLinks() {
     syncLinkForm();
@@ -3555,7 +3892,7 @@
     edit.textContent = state.linksEditing ? "Done" : "Edit or remove links";
     edit.setAttribute("aria-pressed", state.linksEditing ? "true" : "false");
     var active = document.activeElement;
-    var keepFocus = state.linkEdit && state.linkEdit.node.contains(active) ? active : null;
+    var keepFocus = (state.linkEdit && state.linkEdit.node.contains(active) ? active : null) || (state.sectionEdit && state.sectionEdit.node.contains(active) ? active : null);
     // A tile (or one of its buttons) you reached with the keyboard stays focused after a redraw.
     var focusId = null, focusText = null;
     var focusTile = !keepFocus && list.contains(active) ? active.closest("[data-link]") : null;
@@ -3564,8 +3901,7 @@
     var total = 0;
     var spaces = SPACES.filter(function (s) { return s.id !== "all" && (state.filter === "all" || state.filter === s.id); });
     spaces.forEach(function (s) {
-      var all = linksOf(s.id);
-      var shown = all.filter(function (l) { return hit([l.label, F.host(l.url)]); });
+      var shown = linksOf(s.id).filter(function (l) { return hit([l.label, F.host(l.url), l.section]); });
       if (!shown.length) return;
       var group = el("div", "link-group");
       if (state.filter === "all") {
@@ -3574,9 +3910,14 @@
         gname.appendChild(document.createTextNode(s.label));
         group.appendChild(gname);
       }
-      var grid = el("div", "link-grid");
-      shown.forEach(function (l) { grid.appendChild(linkTile(l, all.indexOf(l), all.length)); });
-      group.appendChild(grid);
+      linkSections(s.id).forEach(function (sec) {
+        var inSec = sec.links.filter(function (l) { return shown.indexOf(l) >= 0; });
+        if (!inSec.length) return;
+        if (sec.name) group.appendChild(sectionHead(s.id, sec.name));
+        var grid = el("div", "link-grid");
+        inSec.forEach(function (l) { grid.appendChild(linkTile(l, sec.links.indexOf(l), sec.links.length)); });
+        group.appendChild(grid);
+      });
       list.appendChild(group);
       total += shown.length;
     });
@@ -3713,8 +4054,12 @@
 
   // For the update dot: an open key date that has reached its day, or a proposed one, that was created or came due since you last looked.
   function keyDatesNeedYou(space, since) {
+    return keyDatesNeedYouList(space, since).length > 0;
+  }
+
+  function keyDatesNeedYouList(space, since) {
     var today = todayNumber();
-    return state.keyDates.some(function (k) {
+    return state.keyDates.filter(function (k) {
       if (k.space !== space || (k.status !== "open" && k.status !== "proposed")) return false;
       var day = dayNumber(k.on_date);
       var reached = day <= today;
@@ -4451,6 +4796,7 @@
   function renderToday() {
     var now = Date.now();
     renderNextUp(now);
+    renderCoverNew();
     return renderCoverComing() + renderCoverWork() + renderCoverTasks() + renderCoverInbox() + renderCoverReview();
   }
 
@@ -5777,7 +6123,7 @@
     r.main.appendChild(title);
     var step = (run.status === "working" || run.status === "queued") && trimmed(run.current_step) ? el("span", "run-step-line", trimmed(run.current_step)) : null;
     var secs = finished ? took(run) : "";
-    rowSub(r, [step, secs ? el("span", "run-took", "took " + secs) : null]);
+    rowSub(r, [isNewRun(run) ? newMark() : null, step, secs ? el("span", "run-took", "took " + secs) : null]);
     r.state.appendChild(runState(run));
     var when = finished ? run.finished_at : run.updated_at;
     if (when) r.date.appendChild(el("span", "when-ago", ago(when)));
@@ -5921,7 +6267,7 @@
         sb.from("cover_reviews").select("space, review, points, written_at"),
         sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at"),
         sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50),
-        sb.from("quick_links").select("id, space, label, url, position, created_at").order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
+        sb.from("quick_links").select(LINK_COLS).order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
         sb.from("project_changes").select(CHANGE_COLS).gte("changed_on", localDay(new Date(Date.now() - CHANGE_DAYS * DAY)))
           .order("changed_on", { ascending: false }).order("created_at", { ascending: false }).limit(400),
         sb.from("key_dates").select(KD_COLS)
@@ -6238,11 +6584,16 @@
     $(pre + "space").addEventListener("change", function () { $(pre + "error").hidden = true; syncNoteForm(); });
   });
   $("link-form").addEventListener("submit", function (event) { event.preventDefault(); addLink(); });
-  $("link-space").addEventListener("change", function () { $("link-error").hidden = true; });
+  $("link-space").addEventListener("change", function () {
+    $("link-error").hidden = true;
+    $("link-section").value = ""; // sections belong to one organisation
+    fillSectionChoices($("link-sections"), $("link-space").value);
+  });
   $("links-edit").addEventListener("click", function () {
     state.linksEditing = !state.linksEditing;
     state.linkAsk = null;
     state.linkEdit = null;
+    state.sectionEdit = null;
     render();
   });
   window.addEventListener("resize", function () {
@@ -6254,6 +6605,7 @@
     Notification.requestPermission().then(refreshAlertsButton);
   });
 
+  startVisit();
   startLooked();
   var started = false;
   sb.auth.onAuthStateChange(function (_event, session) {
@@ -6273,6 +6625,7 @@
         state.notes = [];
         state.links = [];
         state.linkEdit = null;
+        state.sectionEdit = null;
         state.linkAsk = null;
         state.linksEditing = false;
         state.covers = [];
@@ -6305,6 +6658,14 @@
   // Safety net if the live connection drops, and to move "Later" items back when their time comes.
   setInterval(function () { if (started && !document.hidden) load(); }, 60000);
   document.addEventListener("visibilitychange", function () {
-    if (started && !document.hidden) { markLooked(); load(); }
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      writePref(VISIT_ACTIVE_KEY, String(hiddenAt));
+      return;
+    }
+    // Shown again after 30 minutes or more: a new visit, taken before markLooked overwrites the last look.
+    if (hiddenAt && Date.now() - hiddenAt >= VISIT_GAP) beginVisit();
+    hiddenAt = 0;
+    if (started) { markLooked(); load(); }
   });
 })();
