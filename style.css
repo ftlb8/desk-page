@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 37)
+   Desk design system (version 38)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -350,6 +350,9 @@ button.row-title { cursor: pointer; }
 .fold-body .file, .fold-body .subject, .fold-body .said:first-child, .fold-body .gist:first-child { margin-top: 0; }
 .fold-body code { background: var(--surface); }
 .fold-body .rows { border: 1px solid var(--line); border-radius: var(--radius-ctl); margin-top: 4px; }
+.start-panel > details.message { margin-bottom: 8px; }
+.source-meta { margin: 0; }
+.task-open > .source-meta + .message { margin-top: 4px; }
 
 /* Text inside folds */
 .gist { margin: 4px 0 0; font-size: var(--fs-body); overflow-wrap: anywhere; }

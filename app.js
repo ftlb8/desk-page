@@ -76,6 +76,8 @@
     refresh: {},      // project page id -> { busy, again, rest, scratch, error }: its standing is being rewritten, or the last try failed
     openTasks: {},    // ids of tasks you expanded in the list
     openItems: {},    // ids of inbox items and suggestions you opened in their list
+    openSteps: {},    // ids of tasks whose Steps fold you opened (kept for this page session only)
+    sourceItems: {},  // id -> the inbox item a task was made from, when it is not among the loaded items (closed or older)
     openSections: { today: true, week: true, weeks: false, later: false }, // task sections you opened or closed
     folds: {},        // the fixed folds (tray, Later, Closed, Decisions, ...) you opened
     query: "",        // what is typed in the search box
@@ -464,6 +466,9 @@
     if (task.urgent && task.status === "open") parts.push("urgent");
     (Array.isArray(task.steps) ? task.steps : []).forEach(function (x) { parts.push(x && x.text); });
     (Array.isArray(task.links) ? task.links : []).forEach(function (x) { parts.push(x && x.label); });
+    // The message the task was made from, as for the item itself.
+    var from = sourceItemOf(task.source_item_id);
+    if (from) parts = parts.concat(itemParts(from));
     return parts;
   }
 
@@ -612,6 +617,84 @@
     return null;
   }
 
+  // The inbox item a task was made from: among the loaded items, or else among the extra ones fetched for the tasks
+  // (a closed or older item is not in the main list). Null when it is gone.
+  function sourceItemOf(id) {
+    if (id === null || id === undefined) return null;
+    for (var i = 0; i < state.items.length; i++) if (String(state.items[i].id) === String(id)) return state.items[i];
+    return state.sourceItems[id] || null;
+  }
+
+  // What an item rests on, behind one fold: the words of the meeting notes, a Google Docs comment notice, or the
+  // original message. Null when it has none (typed by hand, or notes without a quote) so nothing empty is drawn.
+  // The same fold is used under an opened inbox item and under an opened task made from it.
+  function sourceFold(item) {
+    if (fromNotes(item)) {
+      var told = sourcesOf(item).filter(function (x) { return x.quote || x.detail; });
+      if (!told.length) return null;
+      var said = el("details", "message");
+      said.appendChild(el("summary", null, told.length > 1 ? "From the meeting · " + told.length + " sources" : "From the notes"));
+      var saidIn = foldIn(said);
+      told.forEach(function (x) {
+        var block = el("div", "said");
+        var day = meetingDay(x.meeting_on);
+        block.appendChild(el("p", "said-from", x.label + (day ? " · " + day : "")));
+        if (x.quote) block.appendChild(el("p", "body", x.quote));
+        // What the summary above already says is not repeated.
+        if (x.detail && x.detail !== item.summary) block.appendChild(el("p", "said-detail", x.detail));
+        saidIn.appendChild(block);
+      });
+      return said;
+    }
+    var doc = docNotice(item);
+    if (doc) return docView(item, doc);
+    if (item.messages && item.messages.body) return originalView(item);
+    return null;
+  }
+
+  // The source of an opened task, as it goes in the row: a "From:" line with the links, then the fold. Empty when the
+  // task has no source item to show. `any` tells whether something was drawn.
+  function taskSourceNodes(task) {
+    var from = sourceItemOf(task.source_item_id);
+    if (!from) return [];
+    var out = [];
+    var line = el("p", "hint");
+    if (writeSource(line, task.source_item_id)) out.push(line);
+    // Who wrote it, where and when, the same quiet line the item has on its row.
+    if (from.messages && !fromNotes(from)) {
+      var who = [authorLabel(from), whereLabel(from), ago(from.messages.occurred_at)].filter(Boolean);
+      out.push(el("p", "fine source-meta", who.join(" · ")));
+    }
+    var fold = sourceFold(from);
+    if (fold) out.push(fold);
+    return out;
+  }
+
+  // Panels (Start, Plan) can be open under a row that is itself closed; then they carry the source. Under an opened
+  // row the row already shows it, so it is never drawn twice.
+  function rowIsOpen(kind, id) {
+    return kind === "task" ? !!state.openTasks[id] : !!state.openItems[id];
+  }
+
+  // The source for a panel under a closed row: the fold, or the link alone when the message has no text.
+  // `hasLink` is true when the panel already has the link (a draft reply carries it).
+  function panelSourceNodes(kind, id, hasLink) {
+    if (rowIsOpen(kind, id)) return [];
+    if (kind === "task") {
+      var task = state.tasks.filter(function (t) { return String(t.id) === String(id); })[0];
+      return task ? taskSourceNodes(task) : [];
+    }
+    var item = sourceItemOf(id);
+    if (!item) return [];
+    var fold = sourceFold(item);
+    if (fold) return [fold];
+    var links = hasLink ? [] : sourceLinks(item);
+    if (!links.length) return [];
+    var chips = el("p", "plan-links");
+    links.forEach(function (l) { chips.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
+    return [chips];
+  }
+
   // ---------- Confirmation: a brief stamp on the card, then a note with Undo ----------
 
   var calm = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -734,26 +817,8 @@
       var box = el("div", "fold-body item-open");
       if (item.summary) box.appendChild(el("p", "gist", item.summary));
       if (item.reason && (!item.summary || kind === "closed" || kind === "later") && !promise) box.appendChild(el("p", "reason", item.reason));
-      var doc = docNotice(item);
-      if (fromNotes(item)) {
-        var told = sourcesOf(item).filter(function (x) { return x.quote || x.detail; });
-        if (told.length) {
-          var said = el("details", "message");
-          said.appendChild(el("summary", null, told.length > 1 ? "From the meeting · " + told.length + " sources" : "From the notes"));
-          var saidIn = foldIn(said);
-          told.forEach(function (x) {
-            var block = el("div", "said");
-            var day = meetingDay(x.meeting_on);
-            block.appendChild(el("p", "said-from", x.label + (day ? " · " + day : "")));
-            if (x.quote) block.appendChild(el("p", "body", x.quote));
-            // What the summary above already says is not repeated.
-            if (x.detail && x.detail !== item.summary) block.appendChild(el("p", "said-detail", x.detail));
-            saidIn.appendChild(block);
-          });
-          box.appendChild(said);
-        }
-      } else if (doc) box.appendChild(docView(item, doc));
-      else if (m.body) box.appendChild(originalView(item));
+      var fold = sourceFold(item);
+      if (fold) box.appendChild(fold);
 
       var actions = el("div", "actions");
       sourceLinks(item).forEach(function (link) {
@@ -2807,7 +2872,7 @@
   function writeSource(node, itemId) {
     node.textContent = "";
     node.hidden = true;
-    var from = itemId ? state.items.filter(function (i) { return i.id === itemId; })[0] : null;
+    var from = sourceItemOf(itemId);
     if (!from) return false;
     node.hidden = false;
     var lead = fromNotes(from) ? (from.kind === "promise" ? "From your promise in a meeting: " : from.kind === "decision" ? "From a decision in a meeting: " : "From a meeting: ")
@@ -2845,6 +2910,54 @@
     return el("p", "owed-head", text);
   }
 
+  // The steps of an opened task, in a fold that is closed until you open it. The line says how far along they are, so
+  // it reads without opening. Whether it is open is kept for the page session, so a tick or a new step does not close it.
+  function stepsFold(task, steps, canAdd) {
+    var done = steps.filter(function (x) { return x && x.done; }).length;
+    var fold = el("details", "message steps-fold");
+    fold.setAttribute("data-steps", task.id);
+    fold.appendChild(el("summary", null, steps.length ? "Steps · " + done + " of " + steps.length + " done" : "Steps · none yet"));
+    var inner = foldIn(fold);
+    steps.forEach(function (step, i) {
+      var line = el("label", "tstep" + (step.done ? " is-done" : ""));
+      var tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = !!step.done;
+      tick.addEventListener("change", function () {
+        var next = steps.map(function (x, j) { return { text: String(x.text || ""), done: j === i ? tick.checked : !!x.done }; });
+        saveTask(task.id, { steps: next });
+      });
+      line.appendChild(tick);
+      line.appendChild(el("span", null, step.text));
+      inner.appendChild(line);
+    });
+    if (canAdd) {
+      var add = el("div", "td-row td-addlink");
+      var field = document.createElement("input");
+      field.type = "text";
+      field.maxLength = 200;
+      field.placeholder = "Add a step";
+      field.setAttribute("aria-label", "New step");
+      var put = function () {
+        var text = field.value.trim();
+        if (!text) return;
+        state.openSteps[task.id] = true;
+        saveTask(task.id, { steps: steps.map(function (x) { return { text: String(x.text || ""), done: !!x.done }; }).concat([{ text: text, done: false }]) });
+      };
+      field.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") { event.preventDefault(); put(); }
+      });
+      add.appendChild(field);
+      add.appendChild(button("Add step", "btn", put));
+      inner.appendChild(add);
+    }
+    fold.open = !!state.openSteps[task.id];
+    fold.addEventListener("toggle", function () {
+      if (fold.open) state.openSteps[task.id] = true; else delete state.openSteps[task.id];
+    });
+    return fold;
+  }
+
   // What you see when you open a task in the list: everything it holds, read-only.
   function taskDetails(task, row, where, extra) {
     var open = task.status === "open";
@@ -2857,24 +2970,12 @@
     var late = lateNote(task);
     if (late) box.appendChild(el("p", "trow-late", late));
     if (task.context) { box.appendChild(el("p", "gist pre", task.context)); any = true; }
+    // Where the task came from, right under its background: the message it was made from, in a fold, with its link.
+    var sourced = taskSourceNodes(task);
+    if (sourced.length) { any = true; sourced.forEach(function (n) { box.appendChild(n); }); }
     var steps = Array.isArray(task.steps) ? task.steps : [];
-    if (steps.length) {
-      any = true;
-      box.appendChild(label("Steps"));
-      steps.forEach(function (step, i) {
-        var line = el("label", "tstep" + (step.done ? " is-done" : ""));
-        var tick = document.createElement("input");
-        tick.type = "checkbox";
-        tick.checked = !!step.done;
-        tick.addEventListener("change", function () {
-          var next = steps.map(function (x, j) { return { text: String(x.text || ""), done: j === i ? tick.checked : !!x.done }; });
-          saveTask(task.id, { steps: next });
-        });
-        line.appendChild(tick);
-        line.appendChild(el("span", null, step.text));
-        box.appendChild(line);
-      });
-    }
+    if (steps.length) any = true;
+    if (steps.length || open) box.appendChild(stepsFold(task, steps, open));
     if (task.notes) { any = true; box.appendChild(label("Notes")); box.appendChild(el("p", "gist pre", task.notes)); }
     var links = (Array.isArray(task.links) ? task.links : []).map(function (l) {
       var href = l && l.url ? F.safeUrl(l.url) : null;
@@ -2887,8 +2988,6 @@
       links.forEach(function (l) { chips.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
       box.appendChild(chips);
     }
-    var from = el("p", "hint");
-    if (writeSource(from, task.source_item_id)) { any = true; box.appendChild(from); }
     var related = Array.isArray(task.related) ? task.related : [];
     if (related.length) {
       any = true;
@@ -5855,6 +5954,7 @@
       panel.appendChild(el("p", "gist pre ins-does", state.does[row.id]));
     }
     if (row.summary) panel.appendChild(el("p", "gist pre", row.summary));
+    panelSourceNodes(kind, id, row.draft !== null && row.draft !== undefined).forEach(function (n) { panel.appendChild(n); });
 
     var steps = (Array.isArray(row.steps) ? row.steps : []).filter(function (x) { return x && x.text; });
     if (steps.length) {
@@ -5879,7 +5979,7 @@
     var task = null;
     if (kind === "task") {
       task = state.tasks.filter(function (t) { return String(t.id) === String(id); })[0] || null;
-      if (task && task.source_item_id) source = state.items.filter(function (i) { return i.id === task.source_item_id; })[0] || null;
+      if (task && task.source_item_id) source = sourceItemOf(task.source_item_id);
     } else {
       source = state.items.filter(function (i) { return String(i.id) === String(id); })[0] || null;
       task = source ? taskFor(source) : null;
@@ -6570,6 +6670,7 @@
     var run = plannedRunOf(task.id);
     var panel = el("div", "fold-body start-panel run-plan");
     panel.setAttribute("data-plan-panel", taskKey(task.id));
+    panelSourceNodes("task", task.id, false).forEach(function (n) { panel.appendChild(n); });
     if (!run) {
       // The first plan is being written, or it failed.
       var key = taskKey(task.id);
@@ -6879,6 +6980,35 @@
     return out;
   }
 
+  var ITEM_COLUMNS = "id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, sources, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)";
+
+  // The items that tasks were made from and that the main list does not hold (closed, or older than it reaches), so an
+  // opened task can show the message it came from. One query for the ids not already in hand, in chunks of 100. Items
+  // fetched before are kept; an item that is in the main list is read from there. Extra: if it fails, the page loads without.
+  async function loadSourceItems(tasks, items) {
+    var have = {};
+    items.forEach(function (i) { have[i.id] = true; });
+    var kept = {};
+    var missing = [];
+    var seen = {};
+    tasks.forEach(function (t) {
+      var id = t.source_item_id;
+      if (id === null || id === undefined || have[id] || seen[id]) return;
+      seen[id] = true;
+      if (state.sourceItems[id]) kept[id] = state.sourceItems[id]; else missing.push(id);
+    });
+    for (var i = 0; i < missing.length; i += 100) {
+      try {
+        var res = await sb.from("items").select(ITEM_COLUMNS).in("id", missing.slice(i, i + 100));
+        if (res.error) break;
+        (res.data || []).forEach(function (r) { kept[r.id] = r; });
+      } catch (_) {
+        break;
+      }
+    }
+    return kept;
+  }
+
   async function load() {
     // A request that arrives while a load is running is not dropped: it runs right after,
     // so the page never settles on data fetched before the latest change.
@@ -6888,7 +7018,7 @@
       var since = new Date(Date.now() - DAY).toISOString();
       var results = await Promise.all([
         sb.from("items")
-          .select("id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, sources, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)")
+          .select(ITEM_COLUMNS)
           .or('status.in.(open,snoozed),closed_at.gte."' + since + '"')
           .order("created_at", { ascending: false })
           .limit(500),
@@ -6946,7 +7076,9 @@
       else if (state.view === "today" || state.view === "projects") notice("The key dates could not be read: " + results[12].error.message);
       syncRunPoll();
       var items = results[0].data || [];
-      state.people = await loadPeople(items);
+      var fetched = await loadSourceItems(state.tasks, items);
+      state.sourceItems = fetched;
+      state.people = await loadPeople(items.concat(Object.keys(fetched).map(function (k) { return fetched[k]; })));
       announceNew(items);
       state.items = items;
 
