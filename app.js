@@ -98,6 +98,8 @@
     runSeen: readSeen(), // finished runs you opened in this browser session
     planOpen: {},     // task ids whose plan panel is open
     covering: {},     // organisations whose review is being written
+    prepping: {},     // meeting ids whose prep brief is being written
+    prepErr: {},      // meeting id -> the plain error from the last prep try
     starting: {},     // "item:7" / "task:3" while Start is preparing
     startOpen: {},    // starts whose panel you opened
     startAsk: {},     // starts where you are being asked about writing it again
@@ -108,7 +110,7 @@
     fwd: {},          // start id -> { phase: loading | ready | failed, to, note, reason, error }: who a prepared forward would go to
     sendFlow: {},     // "item:7" -> { phase: checking | confirm | blocked | failed | sending, text, to, reason, error } while a reply is being sent
     sent: {},         // start id -> { at, to } for replies sent from this page (a load also brings sent_at)
-    fresh: { starts: {}, covers: {}, runs: {} }, // rows just received from a function, kept until a load has them too
+    fresh: { starts: {}, covers: {}, runs: {}, preps: {} }, // rows just received from a function, kept until a load has them too
     people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
@@ -482,6 +484,9 @@
 
   function meetingParts(m) {
     var parts = [m.title, m.brief];
+    var prep = prepOf(m);
+    if (prep && prep.summary) parts.push(prep.summary);
+    prepLines(prep).forEach(function (x) { parts.push(x.text, x.why); });
     (Array.isArray(m.attendees) ? m.attendees : []).forEach(function (a) { if (a) parts.push(personName(a)); });
     openOwed(m).forEach(function (o) { parts.push(o.title); });
     return parts;
@@ -1340,15 +1345,220 @@
     return "With " + shown;
   }
 
-  // The fold with the brief and what you owe; null when the meeting has neither.
-  function meetingFold(m) {
+  // ---------- Prep brief ----------
+  // The meeting-prep function reads the last notes, the notes doc, your to-dos and the projects, and the result is kept on
+  // the meeting (prep, prepped_at). It takes up to a minute; the rest of the page stays usable.
+
+  var PREP_FAIL = "The prep brief did not finish. Try again in a minute.";
+  var PREP_WHO = { you: "You", them: "Them", both: "Both" };
+
+  function listOf(x) { return Array.isArray(x) ? x.filter(function (y) { return y !== null && y !== undefined; }) : []; }
+
+  // The stored prep of a meeting, or null when it has none.
+  function prepOf(m) {
+    var p = m && m.prep;
+    if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+    var has = (typeof p.summary === "string" && p.summary.trim()) ||
+      ["last_time", "follow_ups", "to_bring", "to_raise", "questions", "read", "gaps"].some(function (k) { return listOf(p[k]).length; });
+    return has ? p : null;
+  }
+
+  // Every line of text a prep holds, for search and for leaving out what it already says.
+  function prepLines(p) {
+    var out = [];
+    if (!p) return out;
+    ["last_time", "follow_ups", "to_bring", "to_raise"].forEach(function (k) {
+      listOf(p[k]).forEach(function (x) { if (x && x.text) out.push({ text: String(x.text), why: x.why ? String(x.why) : "", ref: x.ref || null }); });
+    });
+    listOf(p.questions).forEach(function (x) { if (typeof x === "string" && x) out.push({ text: x, why: "", ref: null }); });
+    return out;
+  }
+
+  function canPrep(m) { return !m.all_day && m.status !== "cancelled"; }
+
+  // What the short brief and the "to deliver" list still add once there is a prep: nothing that the prep already says.
+  function meetingExtras(m) {
+    var p = prepOf(m);
+    var brief = m.brief || "";
     var owed = openOwed(m);
-    if (!m.brief && !owed.length) return null;
+    if (!p) return { brief: brief, owed: owed };
+    var lines = prepLines(p);
+    var said = plain([p.summary].concat(lines.map(function (x) { return x.text; })).join(" \n "));
+    var key = {};
+    var text = {};
+    lines.forEach(function (x) {
+      if (x.ref && x.ref.kind) key[x.ref.kind + ":" + String(x.ref.id)] = true;
+      text[plain(x.text).trim()] = true;
+    });
+    if (brief && said.indexOf(plain(brief).trim()) >= 0) brief = "";
+    owed = owed.filter(function (o) {
+      return !key[o.kind + ":" + String(o.target.id)] && !text[plain(o.title).trim()];
+    });
+    return { brief: brief, owed: owed };
+  }
+
+  // What opening the row shows: "Prep ready", "Context", "3 to deliver", in that order.
+  function meetingMore(m, extras) {
+    var parts = [];
+    if (state.prepping[m.id]) parts.push("Preparing");
+    else if (prepOf(m)) parts.push("Prep ready");
+    if (extras.brief) parts.push("Context");
+    if (extras.owed.length) parts.push(extras.owed.length + " to deliver");
+    return parts.join(" \u00b7 ");
+  }
+
+  // Keeps a prep that the function just returned until a load has it too.
+  function mergePreps(rows) {
+    Object.keys(state.fresh.preps).forEach(function (id) {
+      var f = state.fresh.preps[id];
+      var row = rows.filter(function (r) { return String(r.id) === id; })[0];
+      var caughtUp = row && (Date.parse(row.prepped_at) || 0) >= (Date.parse(f.prepped_at) || 0);
+      if (!row || caughtUp || Date.now() - f.at > 30000) { delete state.fresh.preps[id]; return; }
+      row.prep = f.prep;
+      row.prepped_at = f.prepped_at;
+    });
+    return rows;
+  }
+
+  // Asks the function to write the prep. Only one try per meeting at a time; a prep you already have stays until a new one arrives.
+  async function startPrep(m) {
+    if (state.prepping[m.id]) return;
+    state.prepping[m.id] = true;
+    delete state.prepErr[m.id];
+    state.openMeetings[m.id] = true;
+    render();
+    var res;
+    try {
+      res = await sb.functions.invoke("meeting-prep", { body: { meeting_id: m.id } });
+    } catch (e) {
+      res = { error: e };
+    }
+    var d = res && !res.error ? res.data : null;
+    delete state.prepping[m.id];
+    if (d && d.ok === true && d.prep && typeof d.prep === "object" && !Array.isArray(d.prep)) {
+      var when = typeof d.prepped_at === "string" && d.prepped_at ? d.prepped_at : new Date().toISOString();
+      var row = state.meetings.filter(function (x) { return String(x.id) === String(m.id); })[0];
+      if (row) {
+        row.prep = d.prep;
+        row.prepped_at = when;
+        state.fresh.preps[String(row.id)] = { prep: d.prep, prepped_at: when, at: Date.now() };
+      }
+    } else {
+      state.prepErr[m.id] = (await failureWords(res, PREP_FAIL)).words;
+    }
+    render();
+  }
+
+  // The Prep brief button of a row, a card or an opened meeting. With a prep already stored it opens the meeting to show it;
+  // Refresh (under the prep) asks again.
+  function prepButton(m, now, small) {
+    var busy = !!state.prepping[m.id];
+    var quiet = meetingEnded(m, now);
+    var b = button(busy ? "Preparing..." : "Prep brief", "btn" + (small ? " small" : "") + (quiet ? " subtle" : ""), function () {
+      if (prepOf(m) && !state.prepErr[m.id]) {
+        state.openMeetings[m.id] = true;
+        render();
+        return;
+      }
+      startPrep(m);
+    });
+    b.setAttribute("data-prep", String(m.id));
+    b.disabled = busy;
+    return b;
+  }
+
+  // A line of a prep list: a button to the thing when it is known, plain text when it is not.
+  function prepText(x) {
+    var go = x.ref ? pointTarget(x.ref) : null;
+    return go ? button(String(x.text), "ref cv-ref", go) : el("span", "cv-plain", String(x.text));
+  }
+
+  // One list of a prep, in the two-column pattern of the Today review: the quiet labels share the first column.
+  // Without labels the list has one column.
+  function prepList(rows, lead) {
+    var ul = el("ul", "cv-points prep-list" + (lead ? "" : " prep-one"));
+    rows.forEach(function (r) {
+      var li = el("li", "cv-point");
+      if (lead) li.appendChild(el("span", "att-quiet prep-lead", r.lead || ""));
+      var cell = el("span", "prep-cell");
+      cell.appendChild(prepText(r));
+      if (r.why) cell.appendChild(el("span", "att-quiet prep-why", r.why));
+      li.appendChild(cell);
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  // The prep of a meeting: the working state, a failure, the prep itself with when it was written and Refresh.
+  // Returns null when there is nothing to show.
+  function prepBlock(m) {
+    var p = prepOf(m);
+    var busy = !!state.prepping[m.id];
+    var err = state.prepErr[m.id];
+    if (!p && !busy && !err) return null;
+    var box = el("div", "prep");
+    box.setAttribute("data-prep-box", String(m.id));
+    if (busy) {
+      var wait = el("p", "run-busy prep-busy", "Reading the last notes, your to-dos and projects...");
+      wait.setAttribute("role", "status");
+      box.appendChild(wait);
+    } else if (err) {
+      var bad = el("p", "error prep-error", err + " ");
+      bad.setAttribute("role", "alert");
+      bad.appendChild(button("Try again", "btn small", function () { startPrep(m); }));
+      box.appendChild(bad);
+    }
+    if (!p) return box;
+    var gaps = listOf(p.gaps).filter(function (g) { return typeof g === "string" && g; });
+    if (gaps.length) {
+      var gb = el("div", "prep-gaps");
+      gaps.forEach(function (g) { gb.appendChild(stateText(g, "soon", "prep-gap")); });
+      box.appendChild(gb);
+    }
+    if (typeof p.summary === "string" && p.summary.trim()) box.appendChild(el("p", "gist prep-summary", p.summary));
+    var section = function (title, node) { box.appendChild(label(title)); box.appendChild(node); };
+    var words = function (list) { return listOf(list).filter(function (x) { return x && x.text; }); };
+    var last = words(p.last_time);
+    if (last.length) {
+      var dated = last.some(function (x) { return x.date; });
+      section("Last time", prepList(last.map(function (x) { return { text: x.text, lead: meetingDay(x.date) || "" }; }), dated));
+    }
+    var open = words(p.follow_ups);
+    if (open.length) section("Still open", prepList(open.map(function (x) { return { text: x.text, ref: x.ref, lead: PREP_WHO[x.who] || "" }; }), true));
+    var bring = words(p.to_bring);
+    if (bring.length) section("Bring to this meeting", prepList(bring.map(function (x) { return { text: x.text, ref: x.ref }; }), false));
+    var raise = words(p.to_raise);
+    if (raise.length) section("Raise", prepList(raise.map(function (x) { return { text: x.text, ref: x.ref, why: x.why }; }), false));
+    var ask = listOf(p.questions).filter(function (x) { return typeof x === "string" && x; });
+    if (ask.length) section("Ask", prepList(ask.map(function (x) { return { text: x }; }), false));
+    var read = listOf(p.read).filter(function (x) { return x && x.label; }).map(function (x) {
+      return { text: x.label + (x.date ? " (" + (meetingDay(x.date) || x.date) + ")" : "") };
+    });
+    if (read.length) box.appendChild(el("p", "att-quiet prep-read", "Read for this: " + read.map(function (x) { return x.text; }).join("; ")));
+    var foot = el("div", "cv-written");
+    var when = m.prepped_at ? noteDate(m.prepped_at) : "";
+    if (when) foot.appendChild(el("span", null, "Written " + when));
+    var again = button(busy ? "Preparing..." : "Refresh", "btn small", function () { startPrep(m); });
+    again.disabled = busy;
+    foot.appendChild(again);
+    box.appendChild(foot);
+    return box;
+  }
+
+  // The fold with the prep, the brief and what you owe; null when the meeting has none of them.
+  function meetingFold(m) {
+    var extras = meetingExtras(m);
+    var prep = prepBlock(m);
+    if (!prep && !extras.brief && !extras.owed.length) return null;
     var fold = el("details", "message");
-    fold.appendChild(el("summary", null, (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "")));
+    fold.appendChild(el("summary", null, meetingMore(m, extras) || "Prep brief"));
     var foldBox = foldIn(fold);
-    if (m.brief) foldBox.appendChild(el("p", "gist", m.brief));
-    if (owed.length) foldBox.appendChild(owedBox(owed));
+    if (prep) foldBox.appendChild(prep);
+    if (extras.brief) {
+      if (prep) foldBox.appendChild(label("Context"));
+      foldBox.appendChild(el("p", "gist", extras.brief));
+    }
+    if (extras.owed.length) foldBox.appendChild(owedBox(extras.owed));
     // The page redraws now and then; remember which folds you opened so they stay open.
     fold.open = !!state.openMeetings[m.id];
     fold.addEventListener("toggle", function () {
@@ -1357,8 +1567,8 @@
     return fold;
   }
 
-  // A meeting as a row: title and who in one quiet line, the state (now, soon, not answered), the time, Join at the right end.
-  // Opening it shows the context, what you owe and the calendar link.
+  // A meeting as a row: title and who in one quiet line, the state (now, soon, not answered), the time, Prep brief and Join at the right end.
+  // Opening it shows the prep, the context, what you owe and the calendar link.
   function meetingCard(m, now) {
     var start = meetingDate(m);
     var live = isLive(m, now);
@@ -1369,9 +1579,9 @@
     node.setAttribute("data-meeting", m.id);
     var title = button(m.title || "Meeting", "title row-title", function () {});
     r.main.appendChild(title);
-    var owed = openOwed(m);
-    // What opening the row shows: "Context", "3 to deliver", or both.
-    var more = (m.brief ? "Context" : "") + (m.brief && owed.length ? " · " : "") + (owed.length ? owed.length + " to deliver" : "");
+    var extras = meetingExtras(m);
+    // What opening the row shows: "Prep ready", "Context", "3 to deliver", or some of them.
+    var more = meetingMore(m, extras);
     rowSub(r, [withLine(m) ? el("span", "reason", withLine(m)) : null, m.recurring_event_id ? el("span", "kind-text", "Repeats") : null, more ? el("span", "meet-more", more) : null]);
     var flag = timingFlag(m, now);
     if (flag) r.state.appendChild(flag);
@@ -1380,9 +1590,11 @@
     r.date.appendChild(el("span", "when", m.all_day ? "All day" : clock(start) + " – " + clock(meetingEnd(m))));
     var join = httpsLink(m.join_url);
     var cal = httpsLink(m.event_url);
+    var preppable = canPrep(m);
+    if (preppable) r.acts.appendChild(prepButton(m, now, true));
     if (join && !ended) r.acts.appendChild(linkTo(join, "Join", "btn small join"));
 
-    var hasMore = !!(m.brief || owed.length || cal || (join && ended));
+    var hasMore = !!(preppable || extras.brief || extras.owed.length || cal || (join && ended));
     // A meeting that does not open shows its whole title
     if (!hasMore) { node.classList.add("full"); return node; }
     rowOpens(r, title, isOpen, function () {
@@ -1393,10 +1605,14 @@
     });
     if (isOpen) {
       var box = el("div", "fold-body meeting-open");
-      if (m.brief) { box.appendChild(label("Context")); box.appendChild(el("p", "gist", m.brief)); }
-      if (owed.length) box.appendChild(owedBox(owed));
-      if (cal || (join && ended)) {
+      var prep = prepBlock(m);
+      if (prep) box.appendChild(prep);
+      if (extras.brief) { box.appendChild(label("Context")); box.appendChild(el("p", "gist", extras.brief)); }
+      if (extras.owed.length) box.appendChild(owedBox(extras.owed));
+      var withPrepButton = preppable && !prep;
+      if (withPrepButton || cal || (join && ended)) {
         var actions = el("div", "actions");
+        if (withPrepButton) actions.appendChild(prepButton(m, now, false));
         if (join && ended) actions.appendChild(linkTo(join, "Join", "btn join"));
         if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
         box.appendChild(actions);
@@ -5074,10 +5290,11 @@
     if (who) next.appendChild(el("p", "reason", who));
     var join = httpsLink(m.join_url);
     var cal = httpsLink(m.event_url);
-    if (join || cal) {
+    if (join || cal || canPrep(m)) {
       var actions = el("div", "actions");
       if (join) actions.appendChild(linkTo(join, "Join", "btn join big"));
       if (cal) actions.appendChild(linkTo(cal, "Open in Calendar", "btn"));
+      if (canPrep(m)) actions.appendChild(prepButton(m, now, false));
       next.appendChild(actions);
     }
     var fold = meetingFold(m);
@@ -5186,9 +5403,16 @@
       var task = state.tasks.filter(same)[0];
       return task && task.status === "open" ? function () { goToTask(task); } : null;
     }
-    if (ref.kind === "plan") {
+    if (ref.kind === "plan" || ref.kind === "project") {
       var plan = state.projects.filter(same)[0];
       return plan ? function () { goToProject(plan); } : null;
+    }
+    if (ref.kind === "key_date") {
+      // The project that owns the key date; Projects itself when it belongs to none.
+      var key = keyById(ref.id);
+      if (!key) return null;
+      var owner = projectById(key.project_id);
+      return owner ? function () { goToProject(owner); } : function () { clearSearch(); showView("projects"); };
     }
     if (ref.kind === "meeting") {
       var meeting = state.meetings.filter(same)[0];
@@ -7032,7 +7256,7 @@
         sb.from("projects").select("id, space, name, kind, parent_id, open_now, is_plan, what, stage, depends_on, next_step, target_on, people, tools, links, standing, review, reviewed_at, updated_at").eq("status", "active").order("name").limit(1000),
         // From the start of today (a little earlier, so all-day events dated in another time zone are not missed).
         sb.from("meetings")
-          .select("id, space, event_id, title, starts_at, ends_at, all_day, status, my_response, join_url, event_url, location, organizer, attendees, recurring_event_id, brief, owed")
+          .select("id, space, event_id, title, starts_at, ends_at, all_day, status, my_response, join_url, event_url, location, organizer, attendees, recurring_event_id, brief, owed, prep, prepped_at")
           .gte("starts_at", new Date(dayStart(new Date()) - 14 * 60 * 60 * 1000).toISOString())
           .neq("status", "cancelled")
           .order("starts_at", { ascending: true })
@@ -7058,7 +7282,7 @@
       state.accounts = index(results[2].data, function (a) { return a.space; });
       state.tasks = results[3].data || [];
       state.projects = results[4].data || [];
-      state.meetings = results[5].data || [];
+      state.meetings = mergePreps(results[5].data || []);
       // A note you just saved stays on screen until the database has it.
       state.notes = (results[6].data || []).concat(state.notes.filter(function (n) { return n.pending; }));
       state.covers = mergeCovers(results[7].data || []);

@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 38)
+   Desk design system (version 39)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -537,6 +537,21 @@ code { font: 0.86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; ba
 .cv-point { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: baseline; font-size: var(--fs-body); }
 .cv-point .pill { justify-self: stretch; text-align: center; color: var(--muted); }
 .cv-point .cv-ref, .cv-point .cv-plain { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-body); }
+/* Prep brief of a meeting: the lead paragraph, amber quiet gaps, then lists in the two-column pattern of .cv-points */
+.prep > :first-child { margin-top: 0; }
+.run-busy.prep-busy { font-weight: 400; color: var(--muted); margin: 0 0 8px; }
+.prep-error { margin: 0 0 8px; overflow-wrap: anywhere; }
+.prep-gaps { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
+.prep-gap { font-weight: 400; font-size: var(--fs-quiet); overflow-wrap: anywhere; }
+.prep-summary { margin: 0; white-space: pre-wrap; }
+.prep .cv-points { margin-top: 4px; }
+.prep .cv-points.prep-one { grid-template-columns: minmax(0, 1fr); }
+.prep-lead { white-space: nowrap; }
+.prep-cell { min-width: 0; overflow-wrap: anywhere; }
+.prep-cell .cv-ref { display: inline; text-align: left; }
+.prep-why { margin-left: 6px; }
+.prep-read { margin: 12px 0 0; overflow-wrap: anywhere; }
+.prep .cv-written { margin-top: 12px; }
 .cv-written { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; font-size: var(--fs-quiet); color: var(--muted); }
 .note-form.cv-pad { margin: 0; }
 #cv-note .note-form textarea { min-height: 56px; }
