@@ -1449,17 +1449,13 @@
     render();
   }
 
-  // The Prep brief button of a row, a card or an opened meeting. With a prep already stored it opens the meeting to show it;
-  // Refresh (under the prep) asks again.
+  // The Prep brief button of a row, a card or an opened meeting. It always writes a new prep: with one already stored it
+  // reads "Prep again", so new notes, tasks and meetings since the last one are picked up. The stored prep stays visible
+  // until the new one arrives.
   function prepButton(m, now, small) {
     var busy = !!state.prepping[m.id];
     var quiet = meetingEnded(m, now);
-    var b = button(busy ? "Preparing..." : "Prep brief", "btn" + (small ? " small" : "") + (quiet ? " subtle" : ""), function () {
-      if (prepOf(m) && !state.prepErr[m.id]) {
-        state.openMeetings[m.id] = true;
-        render();
-        return;
-      }
+    var b = button(busy ? "Preparing..." : prepOf(m) ? "Prep again" : "Prep brief", "btn" + (small ? " small" : "") + (quiet ? " subtle" : ""), function () {
       startPrep(m);
     });
     b.setAttribute("data-prep", String(m.id));
@@ -1538,7 +1534,7 @@
     var foot = el("div", "cv-written");
     var when = m.prepped_at ? noteDate(m.prepped_at) : "";
     if (when) foot.appendChild(el("span", null, "Written " + when));
-    var again = button(busy ? "Preparing..." : "Refresh", "btn small", function () { startPrep(m); });
+    var again = button(busy ? "Preparing..." : "Prep again", "btn small", function () { startPrep(m); });
     again.disabled = busy;
     foot.appendChild(again);
     box.appendChild(foot);
