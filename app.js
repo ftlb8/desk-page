@@ -108,6 +108,10 @@
     ins: {},          // "item:7" / "task:3" -> { text, busy, answer, error, addr, addrError }: the Tell the Desk what to do box
     does: {},         // start id -> what the Desk said it will do ("What this does"), kept while the page is open
     fwd: {},          // start id -> { phase: loading | ready | failed, to, note, reason, error }: who a prepared forward would go to
+    replyNew: {},     // "item:7" -> true while a reply you write yourself has its panel open but no start yet (made by the first save)
+    replyAsk: {},     // "item:7" -> true while you are asked whether a prepared forward may be replaced by a reply
+    replyMake: {},    // "item:7" -> the save that makes the start for a reply you wrote, while it is on its way
+    replyBusy: {},    // "item:7" -> true while a start is being emptied for a new reply
     sendFlow: {},     // "item:7" -> { phase: checking | confirm | blocked | failed | sending, text, to, reason, error } while a reply is being sent
     sent: {},         // start id -> { at, to } for replies sent from this page (a load also brings sent_at)
     fresh: { starts: {}, covers: {}, runs: {}, preps: {} }, // rows just received from a function, kept until a load has them too
@@ -805,6 +809,8 @@
         r.acts.appendChild(button("Dismiss", "btn small", function () { act(item.id, "dismiss"); }));
       }
     } else if (kind === "waiting" || kind === "look") {
+      var rowReply = canStart && !isOpen ? replyControl(item, "btn small") : null; // opened, it sits with the other actions below
+      if (rowReply) r.acts.appendChild(rowReply);
       r.acts.appendChild(button("Done", "btn small", function () { act(item.id, "done"); }));
       r.acts.appendChild(laterControl(item, "btn small"));
     } else {
@@ -830,13 +836,16 @@
         actions.appendChild(linkTo(link.href, link.label, "btn"));
       });
       var startBtn = canStart ? startControl("item", item.id, "btn") : null;
+      var replyBtn = canStart ? replyControl(item, "btn") : null;
       if (kind === "decision") {
         actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
       } else if (kind === "commit") {
+        if (replyBtn) actions.appendChild(replyBtn);
         if (startBtn) actions.appendChild(startBtn);
         actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
         actions.appendChild(laterControl(item, "btn subtle"));
       } else if (kind === "waiting" || kind === "look") {
+        if (replyBtn) actions.appendChild(replyBtn);
         if (taskFor(item)) {
           actions.appendChild(el("span", "made", "In your tasks"));
         } else {
@@ -5505,6 +5514,7 @@
   // ---------- Start: steps (and a draft reply) for an item or a task ----------
 
   var startBoxes = {}; // the draft boxes, kept between redraws so typing is never lost
+  var START_COLUMNS = "id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at, instruction, action, forward_to, forward_name";
 
   function stepKey(text) {
     return String(text === undefined || text === null ? "" : text).trim().toLowerCase();
@@ -5552,17 +5562,20 @@
     return out;
   }
 
-  function storeStart(row) {
+  // `keepText` is true for the start of a reply you are typing: the boxes keep what is in them.
+  function storeStart(row, keepText) {
     state.starts = state.starts.filter(function (x) { return x.id !== row.id && !(row.item_id && x.item_id === row.item_id) && !(row.task_id && x.task_id === row.task_id); }).concat([row]);
     state.fresh.starts[row.id] = { row: row, at: Date.now() };
-    // A new draft replaces whatever was typed in the boxes.
     var key = startKey(row.item_id ? "item" : "task", row.item_id || row.task_id);
+    delete state.replyNew[key];
+    // A new draft replaces whatever was typed in the boxes.
     Object.keys(startBoxes).forEach(function (k) {
       if (k.indexOf(key + "|") !== 0) return;
       var ta = startBoxes[k];
+      ta._startId = row.id;
+      if (keepText) return;
       clearTimeout(ta._t);
       ta._dirty = false;
-      ta._startId = row.id;
       ta.value = row.draft || "";
     });
   }
@@ -5571,20 +5584,173 @@
   function startControl(kind, id, className) {
     var key = startKey(kind, id);
     var existing = startFor(kind, id);
-    var busy = !!state.starting[key];
+    var busy = !!state.starting[key] || !!state.replyMake[key];
     if (existing && state.startOpen[key]) return null;
-    var b = button(busy ? "Preparing..." : existing ? "Show start" : "Plan", className, function () {
-      if (existing) { state.startOpen[key] = true; render(); } else runStart(kind, id, false);
+    // A start with nothing in it (a reply you cleared) is not shown; Plan writes over it.
+    var blank = kind === "item" && startBlank(existing);
+    var b = button(busy ? "Preparing..." : existing && !blank ? "Show start" : "Plan", className, function () {
+      if (existing && !blank) { state.startOpen[key] = true; render(); } else runStart(kind, id, blank);
     });
     b.setAttribute("data-start", key);
     b.disabled = busy;
     return b;
   }
 
+  // ---------- Reply: write the answer yourself ----------
+  // The reply is an ordinary start (action "reply", the text in its draft), so Send, its check and its confirm step are the ones
+  // above, unchanged. Nothing here sends anything. A start is made only once there is something to save.
+
+  // A start with nothing in it: no summary, steps, draft or instruction, and not sent. It shows no panel until Reply is pressed.
+  function startBlank(row) {
+    if (!row || row.sent_at || startSent(row)) return false;
+    var steps = Array.isArray(row.steps) ? row.steps.filter(function (x) { return x && x.text; }) : [];
+    return !row.summary && !steps.length && !row.draft && !row.instruction;
+  }
+
+  // An inbox item with a Slack message or an email written by someone else. (Notices from Google Docs have no one to answer.
+  // Other automated senders are refused when Send checks where the reply would go.)
+  function canReply(item) {
+    var m = item && item.messages;
+    if (!m || (m.source !== "slack" && m.source !== "gmail") || m.author_is_me === true) return false;
+    return !isDocNotice(item);
+  }
+
+  function replyWhere(item) {
+    return item.messages.source === "gmail" ? "email" : "slack";
+  }
+
+  // The start a reply gets while it has no row: it exists on the page only.
+  function replyShell(item) {
+    return { id: null, item_id: item.id, task_id: null, space: item.space, summary: null, steps: [], draft: "", draft_kind: replyWhere(item), sent_at: null, instruction: null, action: "reply", forward_to: null, forward_name: null, _new: true };
+  }
+
+  // The Reply button. "Reply again" once the earlier reply was sent. Nothing while you are already writing one.
+  function replyControl(item, className, inPanel) {
+    if (!canReply(item)) return null;
+    var key = startKey("item", item.id);
+    var row = startFor("item", item.id);
+    var sent = !!row && !!startSent(row);
+    var shown = !!state.replyNew[key] || (!!row && !!state.startOpen[key]);
+    if (shown && !inPanel && !(row && isForward(row) && !sent)) return null; // its panel is open: it has the box and its own Reply again
+    var busy = !!state.starting[key] || !!state.replyMake[key] || !!state.replyBusy[key] || sendBusy(key);
+    var b = button(sent ? "Reply again" : "Reply", className, function () { openReply(item); });
+    b.setAttribute("data-reply", key);
+    b.disabled = busy;
+    return b;
+  }
+
+  function focusReply(key) {
+    var box = onPage('[data-start-panel="' + key + '"] textarea.start-draft');
+    if (box && !box.readOnly) box.focus();
+  }
+
+  // Empties the boxes of a start, so a save that is waiting cannot bring back what was in them.
+  function emptyBoxes(key, startId) {
+    Object.keys(startBoxes).forEach(function (k) {
+      if (k.indexOf(key + "|") !== 0) return;
+      var ta = startBoxes[k];
+      clearTimeout(ta._t);
+      ta._dirty = false;
+      ta._startId = startId;
+      ta.value = "";
+    });
+  }
+
+  // Turns a sent reply, a sent forward or a prepared forward into a new, empty reply. The stored row is changed first;
+  // the reply panel opens only once that is saved.
+  async function clearForReply(item) {
+    var key = startKey("item", item.id);
+    var row = startFor("item", item.id);
+    if (!row || state.replyBusy[key] || sendBusy(key)) return;
+    state.replyBusy[key] = true;
+    delete state.replyAsk[key];
+    render();
+    emptyBoxes(key, row.id);
+    var changes = { draft: "", action: "reply", forward_to: null, forward_name: null, instruction: null, summary: null };
+    if (startSent(row)) changes.sent_at = null;
+    var saved = await saveStartFields(row.id, changes, true);
+    delete state.replyBusy[key];
+    if (saved) {
+      delete state.sent[row.id];
+      delete state.fwd[row.id];
+      delete state.does[row.id];
+      delete state.sendFlow[key];
+      delete state.startAsk[key];
+      state.openItems[item.id] = true;
+      state.startOpen[key] = true;
+    }
+    render();
+    if (saved) focusReply(key);
+  }
+
+  function openReply(item) {
+    var key = startKey("item", item.id);
+    var row = startFor("item", item.id);
+    if (!canReply(item) || state.starting[key] || state.replyMake[key] || state.replyBusy[key] || sendBusy(key)) return;
+    state.openItems[item.id] = true;
+    if (row && startSent(row)) {
+      clearForReply(item); // "Reply again"
+      return;
+    }
+    if (row && isForward(row)) {
+      state.startOpen[key] = true; // shows the forward, with the question under it
+      state.replyAsk[key] = true;
+      render();
+      var keep = onPage('[data-reply-no="' + key + '"]');
+      if (keep) keep.focus(); // brings the question into view; Keep is the safe answer
+      return;
+    }
+    if (row) state.startOpen[key] = true; // a prepared reply is opened as it is
+    else state.replyNew[key] = true;
+    render();
+    focusReply(key);
+  }
+
+  // The first save of a reply you wrote: makes its start. One save at a time for an item (item_id is unique).
+  // Answers with true when nothing you typed is left unsaved. Sends nothing.
+  function makeReply(ta) {
+    var ref = ta._ref;
+    var item = ref ? sourceItemOf(ref.id) : null;
+    var key = ref ? startKey("item", ref.id) : "";
+    if (state.replyMake[key]) return state.replyMake[key];
+    var text = ta.value;
+    var rev = ta._rev;
+    if (!text.trim()) { // nothing to keep: no start is made for an empty box
+      ta._dirty = false;
+      return Promise.resolve(true);
+    }
+    if (!item || !canReply(item)) return Promise.resolve(false);
+    var saving = (async function () {
+      var res;
+      try {
+        res = await sb.from("starts").insert({
+          space: item.space, item_id: item.id, summary: null, steps: [], draft: text, draft_kind: replyWhere(item),
+          action: "reply", instruction: null, forward_to: null, forward_name: null,
+        }).select(START_COLUMNS).single();
+      } catch (e) {
+        res = { error: e };
+      }
+      delete state.replyMake[key];
+      if (res.error || !res.data || res.data.id === undefined) {
+        notice("That did not save: " + (res.error && res.error.message ? res.error.message : "no answer") + ". Your text is still in the box. Nothing was sent.");
+        return false;
+      }
+      var open = !!state.replyNew[key];
+      storeStart(res.data, true);
+      if (open) state.startOpen[key] = true;
+      ta._startId = res.data.id;
+      if (ta._rev === rev) ta._dirty = false;
+      render();
+      return ta._dirty ? flushDraft(ta) : true; // more was typed while it saved
+    })();
+    state.replyMake[key] = saving;
+    return saving;
+  }
+
   // Asks the start-item function; it can take up to a minute. It prepares text only; nothing is sent.
   async function runStart(kind, id, redo) {
     var key = startKey(kind, id);
-    if (state.starting[key] || (state.ins[key] && state.ins[key].busy)) return;
+    if (state.starting[key] || state.replyMake[key] || (state.ins[key] && state.ins[key].busy)) return;
     if (redo && (sendBusy(key) || startSent(startFor(kind, id)))) return; // a draft that is being sent or was sent is never replaced
     state.starting[key] = true;
     delete state.startAsk[key];
@@ -5667,6 +5833,7 @@
   function flushDraft(ta) {
     clearTimeout(ta._t);
     if (!ta._dirty) return Promise.resolve(true);
+    if (ta._startId === null || ta._startId === undefined) return makeReply(ta); // a reply you wrote has no start until this first save
     var rev = ta._rev;
     return saveStartFields(ta._startId, { draft: ta.value }, true).then(function (saved) {
       if (saved !== false && ta._rev === rev) ta._dirty = false;
@@ -5779,7 +5946,7 @@
   async function beginSend(key, itemId, ta) {
     if (state.sendFlow[key] || state.starting[key]) return; // one flow at a time
     var row = startFor("item", itemId);
-    if (!row || startSent(row)) return;
+    if (row ? startSent(row) : !state.replyNew[key]) return; // a reply you are writing has no start until its first save, made just below
     var flow = { phase: "checking" };
     state.sendFlow[key] = flow;
     delete state.startAsk[key];
@@ -5791,15 +5958,20 @@
       problem = "The draft did not save, so it was not checked. Nothing was sent.";
     } else {
       text = ta.value; // the box is read-only now, so this is what was saved
+      row = startFor("item", itemId);
       if (!text.trim() || hasBrackets(text)) {
         delete state.sendFlow[key];
         render();
         return;
       }
-      try {
-        res = await sb.functions.invoke("send-reply", { body: { mode: "preview", item_id: itemId } });
-      } catch (e) {
-        res = { error: e };
+      if (!row) {
+        problem = "The draft did not save, so it was not checked. Nothing was sent.";
+      } else {
+        try {
+          res = await sb.functions.invoke("send-reply", { body: { mode: "preview", item_id: itemId } });
+        } catch (e) {
+          res = { error: e };
+        }
       }
     }
     if (state.sendFlow[key] !== flow) return;
@@ -5996,7 +6168,7 @@
   async function runInstruct(kind, id, instruction, forwardTo) {
     var key = startKey(kind, id);
     var st = insState(key);
-    if (st.busy || state.starting[key] || sendBusy(key)) return;
+    if (st.busy || state.starting[key] || state.replyMake[key] || sendBusy(key)) return;
     var text = trimmed(instruction);
     var asking = forwardTo !== undefined;
     var address = trimmed(forwardTo);
@@ -6157,15 +6329,22 @@
 
   // The box sits on the item or task, or in its start panel once one is open (never both).
   function startShown(kind, id) {
-    return !!startFor(kind, id) && !!state.startOpen[startKey(kind, id)];
+    var key = startKey(kind, id);
+    return (!!startFor(kind, id) && !!state.startOpen[key]) || (kind === "item" && !!state.replyNew[key]);
   }
 
   function startPanel(kind, id, where) {
     var key = startKey(kind, id);
     var row = startFor(kind, id);
-    if (!row || !state.startOpen[key]) return null;
+    if (!row && kind === "item" && state.replyNew[key]) {
+      var written = sourceItemOf(id);
+      if (written && canReply(written)) row = replyShell(written); // a reply being written, with no start yet
+    }
+    if (!row || (!row._new && !state.startOpen[key])) return null;
     var busy = !!state.starting[key];
     var forward = isForward(row);
+    // A reply you write has no summary, steps or instruction: nothing was prepared for it.
+    var typed = kind === "item" && !forward && !row.summary && !row.instruction && !(Array.isArray(row.steps) && row.steps.length);
     var panel = el("div", "fold-body start-panel");
     panel.setAttribute("data-start-panel", key);
     if (row.instruction) panel.appendChild(el("p", "fine ins-asked", "You asked: " + row.instruction));
@@ -6217,7 +6396,7 @@
     if (actions.children.length) panel.appendChild(actions);
 
     if (row.draft !== null && row.draft !== undefined) {
-      var head = label(forward ? "Your note, above the forwarded email" : "Draft reply");
+      var head = label(forward ? "Your note, above the forwarded email" : typed ? "Your reply" : "Draft reply");
       if (forward) {
         head.appendChild(document.createTextNode(" "));
         head.appendChild(el("span", "kind", "Forward"));
@@ -6232,7 +6411,11 @@
       }
       panel.appendChild(head);
       if (forward && !sentNow) panel.appendChild(forwardLine(kind, id, row));
+      if (typed && !sentNow && (row.draft_kind === "email" || row.draft_kind === "slack")) {
+        panel.appendChild(el("p", "fine reply-where", row.draft_kind === "email" ? "Replies in the same email thread" : "Replies in the same Slack thread"));
+      }
       var ta = draftBox(key, where, row);
+      ta._ref = { kind: kind, id: id };
       panel.appendChild(ta);
       var tools = el("div", "actions");
       var mark = state.copied[key];
@@ -6270,13 +6453,31 @@
       var wait = button("Preparing...", "btn subtle", function () {});
       wait.disabled = true;
       foot.appendChild(wait);
+    } else if (state.replyAsk[key] && forward && !startSent(row)) {
+      var swapping = !!state.replyBusy[key];
+      foot.appendChild(el("span", "note-ask", "Replace the prepared forward with a reply?"));
+      var yes = button(swapping ? "Replacing..." : "Replace", "btn", function () {
+        var made = sourceItemOf(id);
+        if (made) clearForReply(made);
+      });
+      yes.disabled = swapping;
+      yes.setAttribute("data-reply-yes", key);
+      var no = button("Keep", "btn", function () { delete state.replyAsk[key]; render(); });
+      no.disabled = swapping;
+      no.setAttribute("data-reply-no", key);
+      foot.appendChild(yes);
+      foot.appendChild(no);
     } else if (state.startAsk[key]) {
       foot.appendChild(el("span", "note-ask", row.draft ? "Write it again? Your edits to the draft will be replaced." : "Write it again? Your ticks on the steps will be replaced."));
       foot.appendChild(button("Write again", "btn", function () { runStart(kind, id, true); }));
       foot.appendChild(button("Keep", "btn", function () { delete state.startAsk[key]; render(); }));
     } else {
-      if (!startSent(row) && !sendBusy(key) && !forward) foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
-      foot.appendChild(button("Hide", "btn subtle", function () { delete state.startOpen[key]; delete state.startAsk[key]; render(); }));
+      if (!startSent(row) && !sendBusy(key) && !forward && !row._new) foot.appendChild(button("Redo", "btn subtle", function () { state.startAsk[key] = true; render(); }));
+      if (kind === "item" && startSent(row) && source && canReply(source)) {
+        var again = replyControl(source, "btn", true);
+        if (again) foot.appendChild(again);
+      }
+      foot.appendChild(button("Hide", "btn subtle", function () { delete state.startOpen[key]; delete state.startAsk[key]; delete state.replyNew[key]; delete state.replyAsk[key]; render(); }));
     }
     panel.appendChild(foot);
     return panel;
@@ -7200,7 +7401,7 @@
     return out;
   }
 
-  var ITEM_COLUMNS = "id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, sources, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, subject, body, occurred_at)";
+  var ITEM_COLUMNS = "id, space, lane, status, title, summary, reason, urgency, created_at, closed_at, closed_by, snooze_until, owed_to, due_on, origin, kind, theme, quote, source_label, source_url, meeting_on, sources, messages(source, channel_id, channel_type, thread_ts, ts, author_id, author_name, author_is_me, subject, body, occurred_at)";
 
   // The items that tasks were made from and that the main list does not hold (closed, or older than it reaches), so an
   // opened task can show the message it came from. One query for the ids not already in hand, in chunks of 100. Items
@@ -7262,7 +7463,7 @@
           .order("created_at", { ascending: false })
           .limit(500),
         sb.from("cover_reviews").select("space, review, points, written_at"),
-        sb.from("starts").select("id, item_id, task_id, space, summary, steps, draft, draft_kind, sent_at, updated_at, instruction, action, forward_to, forward_name"),
+        sb.from("starts").select(START_COLUMNS),
         sb.from("runs").select(RUN_COLUMNS).order("created_at", { ascending: false }).limit(50),
         sb.from("quick_links").select(LINK_COLS).order("space", { ascending: true }).order("position", { ascending: true }).order("id", { ascending: true }),
         sb.from("project_changes").select(CHANGE_COLS).gte("changed_on", localDay(new Date(Date.now() - CHANGE_DAYS * DAY)))
