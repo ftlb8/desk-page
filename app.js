@@ -114,6 +114,12 @@
     replyBusy: {},    // "item:7" -> true while a start is being emptied for a new reply
     sendFlow: {},     // "item:7" -> { phase: checking | confirm | blocked | failed | sending, text, to, reason, error } while a reply is being sent
     sent: {},         // start id -> { at, to } for replies sent from this page (a load also brings sent_at)
+    reacted: {},      // item id -> { emoji name: true }: what you reacted with in Slack (from sent_messages, plus what the function just confirmed)
+    reactFresh: {},   // item id -> { emoji name: true }: reactions the function confirmed in this page session, kept so a load cannot lose them
+    reactBusy: {},    // "7:eyes" -> true while that reaction is on its way
+    reactErr: {},     // item id -> the plain error from the last reaction that failed
+    reactOff: {},     // space -> true once the Desk learned that reactions are not turned on for that workspace (this page session only)
+    reactNote: {},    // item id -> true after a check mark was confirmed: the item closes when Slack reports it
     fresh: { starts: {}, covers: {}, runs: {}, preps: {} }, // rows just received from a function, kept until a load has them too
     people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
@@ -837,15 +843,20 @@
       });
       var startBtn = canStart ? startControl("item", item.id, "btn") : null;
       var replyBtn = canStart ? replyControl(item, "btn") : null;
+      var reacts = reactControl(item); // { group, below } for a Slack message from someone else, else null
+      var reactPlaced = false;
       if (kind === "decision") {
+        if (reacts) { actions.appendChild(reacts.group); reactPlaced = true; }
         actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
       } else if (kind === "commit") {
         if (replyBtn) actions.appendChild(replyBtn);
+        if (reacts) { actions.appendChild(reacts.group); reactPlaced = true; }
         if (startBtn) actions.appendChild(startBtn);
         actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
         actions.appendChild(laterControl(item, "btn subtle"));
       } else if (kind === "waiting" || kind === "look") {
         if (replyBtn) actions.appendChild(replyBtn);
+        if (reacts) { actions.appendChild(reacts.group); reactPlaced = true; }
         if (taskFor(item)) {
           actions.appendChild(el("span", "made", "In your tasks"));
         } else {
@@ -855,7 +866,9 @@
         if (startBtn) actions.appendChild(startBtn);
         actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
       }
+      if (reacts && !reactPlaced) actions.appendChild(reacts.group); // closed and later items: after the links
       if (actions.children.length) box.appendChild(actions);
+      if (reacts && reacts.below) box.appendChild(reacts.below);
       if (canStart && !startShown("item", item.id)) box.appendChild(instructBox("item", item.id, where));
       node.appendChild(box);
     }
@@ -5596,6 +5609,127 @@
     return b;
   }
 
+  // ---------- Reactions: one emoji on the Slack message behind an item ----------
+  // A click is the confirmation: a reaction has no text and can be removed in Slack, so there is no confirm step. It goes through
+  // the send-reply function, which adds the emoji as you. The check mark also closes the item, but only when Slack reports the
+  // reaction back to the collector; this page never closes the item itself.
+
+  var REACTIONS = [
+    { name: "thumbsup", glyph: "\uD83D\uDC4D", word: "thumbs up" },
+    { name: "eyes", glyph: "\uD83D\uDC40", word: "eyes" },
+    { name: "white_check_mark", glyph: "\u2705", word: "a check mark" }
+  ];
+  var REACT_OFF = "Reactions are not turned on for this workspace yet.";
+  var REACT_FAIL = "The reaction was not added.";
+  var REACT_NOTE = "The item closes when Slack confirms the check mark.";
+
+  // A Slack message written by someone else.
+  function canReact(item) {
+    var m = item && item.messages;
+    return !!m && m.source === "slack" && m.author_is_me !== true;
+  }
+
+  function reactHas(itemId, emoji) {
+    var have = state.reacted[itemId];
+    return !!have && have[emoji] === true;
+  }
+
+  // The reactions you made in the last 30 days (newest 500), by item. Extra: if it cannot be read, the page loads with none.
+  async function loadReactions() {
+    var out = {};
+    try {
+      var res = await sb.from("sent_messages").select("item_id, body, sent_at").eq("kind", "reaction").eq("status", "sent")
+        .gte("sent_at", new Date(Date.now() - 30 * DAY).toISOString()).order("sent_at", { ascending: false }).limit(500);
+      if (!res || res.error) return out;
+      (res.data || []).forEach(function (r) {
+        var name = r && typeof r.body === "string" ? r.body.trim() : "";
+        if (!r || r.item_id === null || r.item_id === undefined || !REACTIONS.some(function (x) { return x.name === name; })) return;
+        if (!out[r.item_id]) out[r.item_id] = {};
+        out[r.item_id][name] = true;
+      });
+    } catch (_) {
+      return {};
+    }
+    return out;
+  }
+
+  // What the database says, plus what the function confirmed in this page session.
+  function mergeReactions(stored) {
+    Object.keys(state.reactFresh).forEach(function (id) {
+      if (!stored[id]) stored[id] = {};
+      Object.keys(state.reactFresh[id]).forEach(function (name) { stored[id][name] = true; });
+    });
+    return stored;
+  }
+
+  // Learned from a preview answer: this workspace cannot take reactions.
+  function noteCanReact(space, pv) {
+    if (pv && typeof pv === "object" && pv.can_react === false && space) state.reactOff[space] = true;
+  }
+
+  async function reactNow(item, emoji) {
+    var id = item.id;
+    var bk = id + ":" + emoji;
+    if (state.reactBusy[bk] || reactHas(id, emoji) || state.reactOff[item.space]) return;
+    state.reactBusy[bk] = true;
+    delete state.reactErr[id];
+    render();
+    var res;
+    try {
+      res = await sb.functions.invoke("send-reply", { body: { mode: "react", item_id: id, emoji: emoji, request_id: crypto.randomUUID() } }); // REACT CALL
+    } catch (e) {
+      res = { error: e };
+    }
+    delete state.reactBusy[bk];
+    var done = res && !res.error && res.data && res.data.ok === true && res.data.reacted && typeof res.data.reacted === "object" ? res.data.reacted : null;
+    if (done) {
+      if (!state.reactFresh[id]) state.reactFresh[id] = {};
+      state.reactFresh[id][emoji] = true;
+      if (!state.reacted[id]) state.reacted[id] = {};
+      state.reacted[id][emoji] = true;
+      if (emoji === "white_check_mark") state.reactNote[id] = true;
+      render();
+      return;
+    }
+    var f = await failureWords(res, REACT_FAIL);
+    if (/^Reactions are not turned on/i.test(f.words)) state.reactOff[item.space] = true;
+    else state.reactErr[id] = f.words;
+    render();
+    var again = onPage('[data-react="' + bk + '"]');
+    if (again && !again.disabled) again.focus({ preventScroll: true });
+  }
+
+  // The three buttons, and what goes under them. null for anything but a Slack message from someone else.
+  function reactControl(item) {
+    if (!canReact(item)) return null;
+    var id = item.id;
+    var off = state.reactOff[item.space] === true;
+    var group = el("span", "react-group");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Reactions");
+    REACTIONS.forEach(function (r) {
+      var have = reactHas(id, r.name);
+      var busy = state.reactBusy[id + ":" + r.name] === true;
+      var b = button(r.glyph, "btn small react", function () { reactNow(item, r.name); });
+      b.setAttribute("data-react", id + ":" + r.name);
+      b.setAttribute("aria-label", "React with " + r.word);
+      b.setAttribute("aria-pressed", have ? "true" : "false");
+      if (busy) b.setAttribute("aria-busy", "true");
+      b.title = have ? "You reacted with " + r.word : off ? REACT_OFF : "React with " + r.word;
+      b.disabled = have || busy || off;
+      group.appendChild(b);
+    });
+    if (state.reactNote[id] && reactHas(id, "white_check_mark")) group.appendChild(el("span", "fine react-note", REACT_NOTE));
+    var below = null;
+    if (state.reactErr[id]) {
+      below = el("p", "error react-line", state.reactErr[id]);
+      below.setAttribute("role", "alert");
+    } else if (off) {
+      below = el("p", "fine react-line", REACT_OFF);
+    }
+    return { group: group, below: below };
+  }
+
   // ---------- Reply: write the answer yourself ----------
   // The reply is an ordinary start (action "reply", the text in its draft), so Send, its check and its confirm step are the ones
   // above, unchanged. Nothing here sends anything. A start is made only once there is something to save.
@@ -5976,6 +6110,7 @@
     }
     if (state.sendFlow[key] !== flow) return;
     var pv = res && !res.error && res.data && res.data.ok === true ? res.data.preview : null;
+    noteCanReact(row ? row.space : null, pv); // learns whether this workspace takes reactions; changes nothing about the send
     if (problem) {
       flow.phase = "failed";
       flow.error = problem;
@@ -7471,6 +7606,7 @@
         sb.from("key_dates").select(KD_COLS)
           .or('status.in.(proposed,open),and(status.eq.done,done_at.gte."' + new Date(Date.now() - KD_DONE_DAYS * DAY).toISOString() + '")')
           .order("on_date", { ascending: true }).limit(1000),
+        loadReactions(), // extra, and never rejects
       ]);
       var failed = results.slice(0, 9).filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -7495,6 +7631,8 @@
       // The key dates are extra too.
       if (!results[12].error) state.keyDates = results[12].data || [];
       else if (state.view === "today" || state.view === "projects") notice("The key dates could not be read: " + results[12].error.message);
+      // The reactions are extra too: with none readable, only the ones confirmed in this page session show.
+      state.reacted = mergeReactions(results[13] || {});
       syncRunPoll();
       var items = results[0].data || [];
       var fetched = await loadSourceItems(state.tasks, items);
@@ -7856,6 +7994,12 @@
         syncRunPoll();
         state.sendFlow = {};
         state.sent = {};
+        state.reacted = {};
+        state.reactFresh = {};
+        state.reactBusy = {};
+        state.reactErr = {};
+        state.reactOff = {};
+        state.reactNote = {};
         state.seen = null;
         show(false);
       }

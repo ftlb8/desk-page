@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 41)
+   Desk design system (version 42)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -150,6 +150,11 @@ button { cursor: pointer; }
 .kind { font-size: var(--fs-quiet); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; flex: none; }
 .made { font-size: var(--fs-quiet); color: var(--muted); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.react-group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; }
+.btn.react { justify-content: center; min-width: 36px; font-size: 1rem; line-height: 1; }
+.btn.react[aria-pressed="true"], .btn.react[aria-pressed="true"]:disabled { opacity: 1; background: var(--fold-bg); border-color: var(--muted); }
+.react-group .fine { margin: 0 0 0 4px; }
+.react-line { margin: 4px 0 0; }
 .later { position: relative; display: inline-flex; align-items: center; }
 .later .choices { display: none; }
 .later.open .choices {
