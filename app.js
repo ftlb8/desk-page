@@ -563,8 +563,14 @@
     return box;
   }
 
-  // A labelled box inside an opened inbox item or task (the card layout). The text is the small label on top; null when the
-  // box holds a fold whose own summary line is the label. Only used where the place is "inbox" or "tasks".
+  // The places drawn as separate cards with labelled boxes when opened: the Inbox, the Tasks list and the Today blocks that hold
+  // inbox items and tasks.
+  function isCard(where) {
+    return where === "inbox" || where === "tasks" || where === "today";
+  }
+
+  // A labelled box inside an opened inbox item, task or project (the card layout). The text is the small label on top; null when the
+  // box holds a fold whose own summary line is the label. Only used where the place is a card place or the Projects list.
   function sect(text, className) {
     var b = el("div", "sect" + (className ? " " + className : ""));
     if (text) b.appendChild(el("p", "sect-label", text));
@@ -840,7 +846,7 @@
 
     if (isOpen) {
       var box = el("div", "fold-body item-open");
-      var lay = where === "inbox"; // the card layout: each part in its own labelled box
+      var lay = isCard(where); // the card layout: each part in its own labelled box
       var showReason = !!item.reason && (!item.summary || kind === "closed" || kind === "later") && !promise;
       if (lay) {
         if (item.summary || showReason) {
@@ -2356,7 +2362,7 @@
     var box = el("form", "change-add update-box");
     box.noValidate = true; // the page says what is wrong in its own words
     box.setAttribute("data-update-box", p.id);
-    var tl = el("label", "upd-label", "Add an update");
+    var tl = el("label", "upd-label sect-label", "Add an update");
     tl.setAttribute("for", "upd-text-" + p.id);
     box.appendChild(tl);
     var ta = document.createElement("textarea");
@@ -2587,38 +2593,59 @@
     rows.forEach(function (t) { inside.appendChild(taskRow(t, "projects")); });
   }
 
+  // A labelled box on an opened project page. The label also keeps its old class (owed-head), so it reads as before.
+  function projSect(text, className) {
+    var b = sect(text, className);
+    if (b.firstChild) b.firstChild.classList.add("owed-head");
+    return b;
+  }
+
+  // A box whose content wrote its own heading first (key dates, change log): that heading becomes the box label.
+  function labelled(box) {
+    var first = box.firstChild;
+    if (first && first.classList && first.classList.contains("owed-head")) first.classList.add("sect-label");
+    return box;
+  }
+
   function projectPage(p, inside) {
     var topics = topicsOf(p);
     var open = openTasksOf(p);
     var review = p.review && typeof p.review === "object" ? p.review : {};
 
     // Where it stands
-    inside.appendChild(label("Where it stands"));
+    var stands = projSect("Where it stands");
+    inside.appendChild(stands);
     var standing = standingText(p);
     var working = !!(state.refresh[p.id] && state.refresh[p.id].busy);
     var standNode = standing ? el("p", "gist pre", standing) : el("p", "empty", "Nothing is written down yet.");
     if (working) standNode.classList.add("is-working");
-    inside.appendChild(standNode);
+    stands.appendChild(standNode);
     var standNote = standingNote(p);
-    if (standNote) inside.appendChild(standNote);
+    if (standNote) stands.appendChild(standNote);
 
     // Open now
-    inside.appendChild(label("Open now"));
+    var nowBox = projSect("Open now");
+    inside.appendChild(nowBox);
     var now = (Array.isArray(p.open_now) ? p.open_now : []).filter(function (x) { return typeof x === "string" && x.trim(); });
     if (now.length) {
       var ul = el("ul", "plan-steps open-now");
       now.forEach(function (t) { ul.appendChild(el("li", null, t)); });
       if (working) ul.classList.add("is-working");
-      inside.appendChild(ul);
+      nowBox.appendChild(ul);
     } else {
-      inside.appendChild(el("p", "empty", "Nothing is listed as open right now."));
+      nowBox.appendChild(el("p", "empty", "Nothing is listed as open right now."));
     }
-    updateBox(inside, p);
+    var tellBox = sect(null, "sect-tell"); // the update box is the one place on the page where you tell the Desk something: tinted
+    updateBox(tellBox, p);
+    inside.appendChild(tellBox);
 
-    keyDatesSection(inside, p);
+    var keysBox = sect(null);
+    keyDatesSection(keysBox, p);
+    inside.appendChild(labelled(keysBox));
 
     // Tasks
-    inside.appendChild(label("Tasks"));
+    var tasksSect = projSect("Tasks");
+    inside.appendChild(tasksSect);
     var tasksBox = el("div", "rows with-check proj-tasks");
     if (!open.length) tasksBox.appendChild(el("p", "empty", "You have no open tasks here."));
     var order = function (rows) { return urgentFirst(rows.slice().sort(taskOrder)); };
@@ -2632,14 +2659,15 @@
         taskGroup(tasksBox, rows, t.name + (rows.length ? "" : " · no open tasks"), true, t);
       });
     }
-    inside.appendChild(tasksBox);
+    tasksSect.appendChild(tasksBox);
     var addRow = el("p", "plan-links");
     addRow.appendChild(button("Add a task here", "btn small", function () { addTaskHere(p); }));
-    inside.appendChild(addRow);
+    tasksSect.appendChild(addRow);
 
     // Topics
-    inside.appendChild(label("Topics"));
-    if (!topics.length) inside.appendChild(el("p", "empty", "No topics yet."));
+    var topicsBox = projSect("Topics");
+    inside.appendChild(topicsBox);
+    if (!topics.length) topicsBox.appendChild(el("p", "empty", "No topics yet."));
     topics.forEach(function (t) {
       var row = el("div", "topic-row");
       row.setAttribute("data-topic", t.id);
@@ -2651,11 +2679,12 @@
       main.appendChild(el("p", "topic-standing", standingText(t) || "No standing written yet."));
       row.appendChild(main);
       row.appendChild(button("Edit", "btn small subtle", function () { openPlanDialog(t, null); }));
-      inside.appendChild(row);
+      topicsBox.appendChild(row);
     });
 
     // The plan
-    inside.appendChild(label("The plan"));
+    var planBox = projSect("The plan");
+    inside.appendChild(planBox);
     var fields = el("div", "proj-fields");
     if (p.stage) fields.appendChild(el("p", "reason", "Stage: " + stageLabel(p)));
     if (p.what && p.standing) fields.appendChild(el("p", "gist", p.what));
@@ -2673,7 +2702,7 @@
       fields.appendChild(chips);
     }
     if (!fields.children.length) fields.appendChild(el("p", "empty", "No plan details yet. Press Edit to add them."));
-    inside.appendChild(fields);
+    planBox.appendChild(fields);
 
     // Decisions from your meetings that are about this project or one of its topics
     var names = [p].concat(topics).map(function (x) { return plain(x.name); });
@@ -2681,39 +2710,41 @@
       return i.lane === "commitment" && i.kind === "decision" && (i.status === "open" || i.status === "snoozed") && i.theme && names.indexOf(plain(i.theme)) >= 0;
     });
     if (decisions.length) {
-      inside.appendChild(label("Decisions"));
+      var decBox = projSect("Decisions");
+      inside.appendChild(decBox);
       decisions.forEach(function (d) {
         var row = el("div", "plan-task");
         row.appendChild(button(d.title, "ref", function () { goToItem(d); }));
-        inside.appendChild(row);
+        decBox.appendChild(row);
       });
     }
 
     // The review: projects only, not areas and not topics
     if (isTopLevel(p) && !isArea(p)) {
-      inside.appendChild(label("Review"));
-      if (p.reviewed_at) inside.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at)) + (reviewOvertaken(p) ? ". You have added an update since, so this review may be out of date." : "")));
+      var rv = projSect("Review");
+      inside.appendChild(rv);
+      if (p.reviewed_at) rv.appendChild(el("p", "fine", "Reviewed " + shortDate(new Date(p.reviewed_at)) + (reviewOvertaken(p) ? ". You have added an update since, so this review may be out of date." : "")));
       var steps = Array.isArray(review.next_steps) ? review.next_steps.filter(Boolean) : [];
       var suggested = openSuggestions(p, review, open);
       var sources = (Array.isArray(review.sources) ? review.sources : []).filter(function (x) { return x && x.label; });
       if (steps.length) {
-        inside.appendChild(label("Suggested next steps"));
+        rv.appendChild(label("Suggested next steps"));
         var sl = el("ul", "plan-steps");
         steps.forEach(function (t) { sl.appendChild(el("li", null, String(t))); });
-        inside.appendChild(sl);
+        rv.appendChild(sl);
       }
       if (suggested.length) {
-        inside.appendChild(label("Suggested tasks"));
+        rv.appendChild(label("Suggested tasks"));
         suggested.forEach(function (text) {
           var row = el("div", "plan-suggest");
           row.appendChild(el("span", "plan-suggest-text", text));
           row.appendChild(button("Add as task", "btn small", function () { suggestTask(p, text); }));
           row.appendChild(button("Dismiss", "btn small", function () { dismissSuggestion(p, text); }));
-          inside.appendChild(row);
+          rv.appendChild(row);
         });
       }
       if (sources.length) {
-        inside.appendChild(label("From"));
+        rv.appendChild(label("From"));
         sources.forEach(function (x) {
           var row = el("p", "plan-source");
           var href = httpsLink(x.url);
@@ -2725,34 +2756,38 @@
           } else {
             row.appendChild(document.createTextNode(x.label + when));
           }
-          inside.appendChild(row);
+          rv.appendChild(row);
         });
       }
-      if (review.note) inside.appendChild(el("p", "fine", String(review.note)));
+      if (review.note) rv.appendChild(el("p", "fine", String(review.note)));
       var again = button(state.reviewing[p.id] ? "Reviewing…" : "Review now", "btn small", function () { reviewPlan(p); });
       again.disabled = !!state.reviewing[p.id];
       var reviewRow = el("p", "plan-links");
       reviewRow.appendChild(again);
-      inside.appendChild(reviewRow);
+      rv.appendChild(reviewRow);
     }
 
     // Notes tied to this project
     var projectNotes = state.notes.filter(function (n) { return sameId(n.project_id, p.id); }).sort(notesNewest);
     if (projectNotes.length) {
-      inside.appendChild(label("Notes"));
+      var notesBox = projSect("Notes");
+      inside.appendChild(notesBox);
       projectNotes.slice(0, 3).forEach(function (n) {
         var line = el("div", "plan-note");
         line.appendChild(el("span", "meta", noteDate(n.created_at)));
         line.appendChild(el("p", "plan-note-text", firstLines(n.body)));
-        inside.appendChild(line);
+        notesBox.appendChild(line);
       });
       var allNotes = el("p", "plan-links");
       allNotes.appendChild(button("All notes", "btn small", function () { showNotesFor(p); }));
-      inside.appendChild(allNotes);
+      notesBox.appendChild(allNotes);
     }
 
-    changeLog(inside, p);
+    var logBox = sect(null);
+    changeLog(logBox, p);
+    inside.appendChild(labelled(logBox));
 
+    var doBox = sect("What you can do", "sect-do");
     var actions = el("div", "actions");
     actions.appendChild(button("Edit", "btn", function () { openPlanDialog(p, null); }));
     actions.appendChild(button("Add a topic", "btn", function () { openPlanDialog(null, p); }));
@@ -2760,7 +2795,8 @@
       state.project = p.id;
       showView("tasks");
     }));
-    inside.appendChild(actions);
+    doBox.appendChild(actions);
+    inside.appendChild(doBox);
   }
 
   // Opens or closes a project row; one project page is open at a time.
@@ -2870,8 +2906,13 @@
     rowOpens(r, title, isOpen, function () { toggleProject("unsorted"); });
     if (isOpen) {
       var inside = el("div", "fold-body project-page");
-      if (looseKeys.length) keyDatesSection(inside, null);
-      inside.appendChild(label("Tasks"));
+      if (looseKeys.length) {
+        var looseBox = sect(null);
+        keyDatesSection(looseBox, null);
+        inside.appendChild(labelled(looseBox));
+      }
+      var looseTasks = projSect("Tasks");
+      inside.appendChild(looseTasks);
       var list = el("div", "rows with-check proj-tasks");
       urgentFirst(tasks.slice().sort(taskOrder)).forEach(function (t) {
         var wrap = el("div", "unsorted-row");
@@ -2898,7 +2939,7 @@
         wrap.appendChild(file);
         list.appendChild(wrap);
       });
-      inside.appendChild(list);
+      looseTasks.appendChild(list);
       node.appendChild(inside);
     }
     return { node: node, needs: hot > 0 };
@@ -3227,7 +3268,7 @@
   // What you see when you open a task in the list: everything it holds, read-only.
   function taskDetails(task, row, where, extra) {
     var open = task.status === "open";
-    var lay = where === "tasks"; // the card layout: each part in its own labelled box
+    var lay = isCard(where); // the card layout: each part in its own labelled box
     var box = el("div", "fold-body task-open");
     var any = false;
     var tags = el("p", "fine task-tags");
@@ -6494,7 +6535,7 @@
     var box = el("div", "ins-box");
     box.setAttribute("data-instruct", key);
     var fid = "ins-" + kind + "-" + id + "-" + where;
-    var cardLayout = where === "inbox" || where === "tasks"; // the card layout words it as one more way to act
+    var cardLayout = isCard(where); // the card layout words it as one more way to act
     var lab = el("label", "upd-label" + (cardLayout ? " sect-label" : ""), cardLayout ? "Or tell the Desk what to do" : "Tell the Desk what to do");
     lab.setAttribute("for", fid);
     box.appendChild(lab);
@@ -6541,7 +6582,7 @@
   // The card layout (inbox items and tasks): the content of a start or plan panel goes into one box of its own; the "tell
   // the Desk" box, if there is one, stays apart, tinted. Nothing is added or removed. Other lists are left as they are.
   function boxPanel(panel, where) {
-    if (where !== "inbox" && where !== "tasks") return panel;
+    if (!isCard(where)) return panel;
     var inner = el("div", "sect start-box");
     var tell = null;
     while (panel.firstChild) {

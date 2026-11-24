@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 43)
+   Desk design system (version 44)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -32,6 +32,9 @@
    organisation colour with a 5px left edge, the opened area on --open-body under a --open-line rule. Inside it every part sits in its own
    box (.sect: --section-bg, --open-line, radius 8px) under a small label (.sect-label): Summary, the original message (its fold
    summary is the label), Steps, What you can do (Reply is the one filled button), and "Or tell the Desk what to do" (--tell-bg).
+   The same cards on Today (the inbox items and tasks in #cv-inbox and #cv-tasks) and on Projects (#list-proj .row.proj): an opened
+   project holds Where it stands, Open now, Add an update (tinted), Key dates, Tasks, Topics, The plan, Review, Notes, Change log and
+   What you can do, each in a .sect box under its own label.
    Spacing 4/8/12/16/24; one radius for containers, one for controls; hairline borders; no shadows, no gradients.
    ========================================================================== */
 :root {
@@ -876,66 +879,198 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 
 /* ---------- Cards: the Inbox list and the Tasks list (v43) ---------- */
 /* The list holds no surface of its own: each item or task is a card, with a gap between. Section headings stay. */
-#list-inbox .tsec, #list-tasks .tsec { background: none; border: 0; border-radius: 0; margin-bottom: 16px; }
-#list-inbox .tsec-head, #list-tasks .tsec-head { border-bottom: 0; padding: 8px 2px; }
-#list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows { background: none; border: 0; border-radius: 0; row-gap: 10px; }
-#list-inbox .tsec-body.rows > .empty, #list-tasks .tsec-body.rows > .empty { padding: 4px 2px; }
-#list-inbox .item-row, #list-tasks .trow {
+#list-inbox .tsec,
+#list-tasks .tsec,
+#cv-inbox,
+#cv-tasks { background: none; border: 0; border-radius: 0; margin-bottom: 16px; }
+#list-inbox .tsec-head,
+#list-tasks .tsec-head,
+#cv-inbox .tsec-head,
+#cv-tasks .tsec-head { border-bottom: 0; padding: 8px 2px; }
+#list-inbox .tsec-body.rows,
+#list-tasks .tsec-body.rows,
+#cv-inbox .tsec-body.rows,
+#cv-tasks .tsec-body.rows { background: none; border: 0; border-radius: 0; row-gap: 10px; }
+#list-inbox .tsec-body.rows > .empty,
+#list-tasks .tsec-body.rows > .empty,
+#cv-inbox .tsec-body.rows > .empty,
+#cv-tasks .tsec-body.rows > .empty { padding: 4px 2px; }
+#list-inbox .item-row,
+#list-tasks .trow,
+#cv-inbox .item-row,
+#cv-tasks .trow {
   background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--org, var(--line)); border-radius: var(--radius);
 }
 /* The opened card: outlined in its organisation colour, the left edge 5px (the head's padding gives back the 2px, so the text stays put) */
-#list-inbox .item-row.is-open, #list-tasks .trow.is-open {
+#list-inbox .item-row.is-open,
+#list-tasks .trow.is-open,
+#cv-inbox .item-row.is-open,
+#cv-tasks .trow.is-open {
   background: var(--open-body); border: 1px solid var(--org, var(--ink)); border-left-width: 5px;
 }
-#list-inbox .item-row.is-open > .row-head, #list-tasks .trow.is-open > .row-head {
+#list-inbox .item-row.is-open > .row-head,
+#list-tasks .trow.is-open > .row-head,
+#cv-inbox .item-row.is-open > .row-head,
+#cv-tasks .trow.is-open > .row-head {
   background: var(--open-head); border-radius: 9px 9px 0 0; padding-left: 7px;
 }
 /* The opened area, and a start or plan panel under the card */
-#list-inbox .row > .fold-body, #list-tasks .row > .fold-body {
+#list-inbox .row > .fold-body,
+#list-tasks .row > .fold-body,
+#cv-inbox .row > .fold-body,
+#cv-tasks .row > .fold-body {
   display: flex; flex-direction: column; gap: 10px; margin: 0 !important; padding: 14px; border-radius: 0 0 9px 9px;
   background: var(--open-body); border-top: 1px solid var(--open-line);
 }
-#list-inbox .row > .fold-body + .fold-body, #list-tasks .row > .fold-body + .fold-body { border-top: 0; padding-top: 0; }
-#list-inbox .row > .fold-body > *, #list-tasks .row > .fold-body > * { margin: 0; min-width: 0; }
+#list-inbox .row > .fold-body + .fold-body,
+#list-tasks .row > .fold-body + .fold-body,
+#cv-inbox .row > .fold-body + .fold-body,
+#cv-tasks .row > .fold-body + .fold-body { border-top: 0; padding-top: 0; }
+#list-inbox .row > .fold-body > *,
+#list-tasks .row > .fold-body > *,
+#cv-inbox .row > .fold-body > *,
+#cv-tasks .row > .fold-body > * { margin: 0; min-width: 0; }
 /* Each part in its own labelled box */
-#list-inbox .sect, #list-tasks .sect {
+#list-inbox .sect,
+#list-tasks .sect,
+#cv-inbox .sect,
+#cv-tasks .sect {
   background: var(--section-bg); border: 1px solid var(--open-line); border-radius: 8px; padding: 12px 14px; min-width: 0;
 }
-#list-inbox .sect > * + *, #list-tasks .sect > * + * { margin-top: 8px; }
-#list-inbox .sect-label, #list-tasks .sect-label { display: block; margin: 0 0 8px; font-size: 11px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
-#list-inbox .sect .gist, #list-tasks .sect .gist { margin: 0; }
-#list-inbox .sect .reason { margin-top: 8px; }
+#list-inbox .sect > * + *,
+#list-tasks .sect > * + *,
+#cv-inbox .sect > * + *,
+#cv-tasks .sect > * + * { margin-top: 8px; }
+#list-inbox .sect-label,
+#list-tasks .sect-label,
+#cv-inbox .sect-label,
+#cv-tasks .sect-label { display: block; margin: 0 0 8px; font-size: 11px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+#list-inbox .sect .gist,
+#list-tasks .sect .gist,
+#cv-inbox .sect .gist,
+#cv-tasks .sect .gist { margin: 0; }
+#list-inbox .sect .reason,
+#cv-inbox .sect .reason { margin-top: 8px; }
 /* A fold in a box: its summary line is the label; the text shows under a 2px rule */
-#list-inbox .sect > details.message, #list-tasks .sect > details.message { margin: 0; }
-#list-inbox .sect > details.message > summary, #list-tasks .sect > details.message > summary {
+#list-inbox .sect > details.message,
+#list-tasks .sect > details.message,
+#cv-inbox .sect > details.message,
+#cv-tasks .sect > details.message { margin: 0; }
+#list-inbox .sect > details.message > summary,
+#list-tasks .sect > details.message > summary,
+#cv-inbox .sect > details.message > summary,
+#cv-tasks .sect > details.message > summary {
   min-height: 28px; padding: 0; color: var(--ink); font-size: var(--fs-quiet); font-weight: 600;
 }
-#list-inbox .sect .fold-body, #list-tasks .sect .fold-body {
+#list-inbox .sect .fold-body,
+#list-tasks .sect .fold-body,
+#cv-inbox .sect .fold-body,
+#cv-tasks .sect .fold-body {
   margin: 8px 0 0; padding: 2px 0 2px 12px; background: none; border: 0; border-left: 2px solid var(--open-line); border-radius: 0;
 }
-#list-inbox .sect .fold-body .fold-body, #list-tasks .sect .fold-body .fold-body { background: none; }
-#list-inbox .sect > .hint, #list-tasks .sect > .hint, #list-tasks .sect > .source-meta, #list-tasks .sect > .fine { margin-top: 0; }
-#list-inbox .sect > .hint + *, #list-tasks .sect > .hint + * { margin-top: 4px; }
+#list-inbox .sect .fold-body .fold-body,
+#list-tasks .sect .fold-body .fold-body,
+#cv-inbox .sect .fold-body .fold-body,
+#cv-tasks .sect .fold-body .fold-body { background: none; }
+#list-inbox .sect > .hint,
+#list-tasks .sect > .hint,
+#list-tasks .sect > .source-meta,
+#list-tasks .sect > .fine,
+#cv-inbox .sect > .hint,
+#cv-tasks .sect > .hint,
+#cv-tasks .sect > .source-meta,
+#cv-tasks .sect > .fine { margin-top: 0; }
+#list-inbox .sect > .hint + *,
+#list-tasks .sect > .hint + *,
+#cv-inbox .sect > .hint + *,
+#cv-tasks .sect > .hint + * { margin-top: 4px; }
 /* What you can do */
-#list-inbox .sect .actions, #list-tasks .sect .actions { margin-top: 0; gap: 8px; }
+#list-inbox .sect .actions,
+#list-tasks .sect .actions,
+#cv-inbox .sect .actions,
+#cv-tasks .sect .actions { margin-top: 0; gap: 8px; }
 .btn.reply-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 .btn.reply-primary:hover { border-color: var(--ink); }
-#list-inbox .sect .actions .react-group { margin: 0 4px; padding: 0 8px; border-left: 1px solid var(--open-line); border-right: 1px solid var(--open-line); }
-#list-inbox .sect .react-line { margin: 8px 0 0; }
+#list-inbox .sect .actions .react-group,
+#cv-inbox .sect .actions .react-group { margin: 0 4px; padding: 0 8px; border-left: 1px solid var(--open-line); border-right: 1px solid var(--open-line); }
+#list-inbox .sect .react-line,
+#cv-inbox .sect .react-line { margin: 8px 0 0; }
 /* Or tell the Desk what to do */
-#list-inbox .ins-box, #list-tasks .ins-box { margin: 0; padding: 12px 14px; background: var(--tell-bg); border: 1px solid var(--tell-line); border-radius: 8px; }
-#list-inbox .ins-box > .sect-label, #list-tasks .ins-box > .sect-label { margin: 0 0 8px; color: var(--accent); }
-#list-inbox .ins-line input, #list-tasks .ins-line input { background: var(--surface); }
-#list-inbox .start-box > .owed-head:first-child, #list-tasks .start-box > .owed-head:first-child { margin-top: 0; }
+#list-inbox .ins-box,
+#list-tasks .ins-box,
+#cv-inbox .ins-box,
+#cv-tasks .ins-box { margin: 0; padding: 12px 14px; background: var(--tell-bg); border: 1px solid var(--tell-line); border-radius: 8px; }
+#list-inbox .ins-box > .sect-label,
+#list-tasks .ins-box > .sect-label,
+#cv-inbox .ins-box > .sect-label,
+#cv-tasks .ins-box > .sect-label { margin: 0 0 8px; color: var(--accent); }
+#list-inbox .ins-line input,
+#list-tasks .ins-line input,
+#cv-inbox .ins-line input,
+#cv-tasks .ins-line input { background: var(--surface); }
+#list-inbox .start-box > .owed-head:first-child,
+#list-tasks .start-box > .owed-head:first-child,
+#cv-inbox .start-box > .owed-head:first-child,
+#cv-tasks .start-box > .owed-head:first-child { margin-top: 0; }
 @media (max-width: 600px) {
-  #list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows { row-gap: 8px; }
-  #list-inbox .row > .fold-body, #list-tasks .row > .fold-body { padding: 12px; }
-  #list-inbox .sect, #list-tasks .sect { padding: 12px; }
+  #list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows, #cv-inbox .tsec-body.rows, #cv-tasks .tsec-body.rows { row-gap: 8px; }
+  #list-inbox .row > .fold-body, #list-tasks .row > .fold-body, #cv-inbox .row > .fold-body, #cv-tasks .row > .fold-body { padding: 12px; }
+  #list-inbox .sect, #list-tasks .sect, #cv-inbox .sect, #cv-tasks .sect { padding: 12px; }
   #list-inbox .row .btn, #list-tasks .row .btn, #list-inbox .row .primary, #list-tasks .row .primary,
-  #list-inbox .row .quiet, #list-tasks .row .quiet, #list-tasks .row .task-when { min-height: 44px; }
-  #list-inbox .sect > details.message > summary, #list-tasks .sect > details.message > summary { min-height: 44px; }
-  #list-inbox .sect .tstep, #list-tasks .sect .tstep, #list-tasks .start-box .tstep { min-height: 44px; }
-  #list-inbox .sect .actions .react-group { margin: 0; padding: 0 4px; }
+  #list-inbox .row .quiet, #list-tasks .row .quiet, #list-tasks .row .task-when,
+  #cv-inbox .row .btn, #cv-tasks .row .btn, #cv-inbox .row .primary, #cv-tasks .row .primary,
+  #cv-inbox .row .quiet, #cv-tasks .row .quiet, #cv-tasks .row .task-when { min-height: 44px; }
+  #list-inbox .sect > details.message > summary, #list-tasks .sect > details.message > summary,
+  #cv-inbox .sect > details.message > summary, #cv-tasks .sect > details.message > summary { min-height: 44px; }
+  #list-inbox .sect .tstep, #list-tasks .sect .tstep, #list-tasks .start-box .tstep,
+  #cv-inbox .sect .tstep, #cv-tasks .sect .tstep, #cv-tasks .start-box .tstep { min-height: 44px; }
+  #list-inbox .sect .actions .react-group, #cv-inbox .sect .actions .react-group { margin: 0; padding: 0 4px; }
+}
+
+/* ---------- Cards: Today and the Projects list (v44) ---------- */
+/* Today: the two blocks that hold inbox items and tasks are lists of cards too, with the rules above. The block's own gap does the spacing. */
+#cv-inbox, #cv-tasks { margin-bottom: 0; }
+/* Projects: each project or area is a card; the groups hold no surface of their own. */
+#list-proj .grp > .rows { background: none; border: 0; border-radius: 0; row-gap: 10px; margin-top: 4px; }
+#list-proj .grp > .rows > .empty { padding: 4px 2px; }
+#list-proj .row.proj {
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--org, var(--line)); border-radius: var(--radius);
+}
+#list-proj .row.proj.is-open { background: var(--open-body); border: 1px solid var(--org, var(--ink)); border-left-width: 5px; }
+#list-proj .row.proj.is-open > .row-head { background: var(--open-head); border-radius: 9px 9px 0 0; padding-left: 7px; }
+#list-proj .row.proj > .fold-body {
+  display: flex; flex-direction: column; gap: 10px; margin: 0 !important; padding: 14px; border-radius: 0 0 9px 9px;
+  background: var(--open-body); border-top: 1px solid var(--open-line);
+}
+#list-proj .row.proj > .fold-body > * { margin: 0; min-width: 0; }
+#list-proj .proj-kind { margin: 0; padding: 0 2px; }
+#list-proj .proj .sect {
+  background: var(--section-bg); border: 1px solid var(--open-line); border-radius: 8px; padding: 12px 14px; min-width: 0;
+}
+#list-proj .proj .sect > * + * { margin-top: 8px; }
+#list-proj .proj .sect-label { display: block; margin: 0 0 8px; font-size: 11px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+#list-proj .proj .sect > .sect-label + * { margin-top: 0; }
+#list-proj .proj .sect .gist { margin: 0; }
+#list-proj .proj .sect > .empty, #list-proj .proj .sect > .fine { margin-top: 0; }
+#list-proj .proj .sect .rows { background: none; border: 0; border-radius: 0; margin-top: 0; }
+#list-proj .proj .sect .kd-list { margin: 0; }
+#list-proj .proj .sect .rows > .empty { padding: 0; }
+#list-proj .proj .sect .proj-fields > * + * { margin-top: 4px; }
+#list-proj .proj .sect > .plan-links, #list-proj .proj .sect > .upd-scratch { margin-top: 8px; }
+#list-proj .proj .sect .actions { margin-top: 0; gap: 8px; }
+/* The update box is the one place on the page where you tell the Desk something: tinted like "Or tell the Desk what to do" */
+#list-proj .proj .sect.sect-tell { background: var(--tell-bg); border-color: var(--tell-line); }
+#list-proj .proj .sect.sect-tell .sect-label { color: var(--accent); }
+#list-proj .proj .sect.sect-tell .update-box { margin: 0; }
+#list-proj .proj .sect.sect-tell textarea, #list-proj .proj .sect.sect-tell input, #list-proj .proj .sect.sect-tell select { background: var(--surface); }
+@media (max-width: 600px) {
+  #list-proj .grp > .rows { row-gap: 8px; }
+  #list-proj .row.proj > .fold-body { padding: 12px; }
+  #list-proj .proj .sect { padding: 12px; }
+  #list-proj .row.proj .btn, #list-proj .row.proj .primary, #list-proj .row.proj .quiet, #list-proj .row.proj select,
+  #list-proj .row.proj .chip, #list-proj .row.proj .ref { min-height: 44px; }
+  #list-proj .row.proj .proj-sub .quiet, #list-proj .row.proj .topic-row .btn, #list-proj .row.proj .change-correct { min-height: 44px; }
+  #list-proj .row.proj details > summary { min-height: 44px; }
 }
 
 /* ---------- Your updates, and Tell the Desk what to do ---------- */
