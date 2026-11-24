@@ -563,6 +563,14 @@
     return box;
   }
 
+  // A labelled box inside an opened inbox item or task (the card layout). The text is the small label on top; null when the
+  // box holds a fold whose own summary line is the label. Only used where the place is "inbox" or "tasks".
+  function sect(text, className) {
+    var b = el("div", "sect" + (className ? " " + className : ""));
+    if (text) b.appendChild(el("p", "sect-label", text));
+    return b;
+  }
+
   // A Google Docs, Sheets or Slides notice: the file, each comment, and a link to it. Nothing else.
   function docView(item, doc) {
     var box = el("details", "message doc");
@@ -832,43 +840,67 @@
 
     if (isOpen) {
       var box = el("div", "fold-body item-open");
-      if (item.summary) box.appendChild(el("p", "gist", item.summary));
-      if (item.reason && (!item.summary || kind === "closed" || kind === "later") && !promise) box.appendChild(el("p", "reason", item.reason));
+      var lay = where === "inbox"; // the card layout: each part in its own labelled box
+      var showReason = !!item.reason && (!item.summary || kind === "closed" || kind === "later") && !promise;
+      if (lay) {
+        if (item.summary || showReason) {
+          var sum = sect(item.summary ? "Summary" : null);
+          if (item.summary) sum.appendChild(el("p", "gist", item.summary));
+          if (showReason) sum.appendChild(el("p", "reason", item.reason));
+          box.appendChild(sum);
+        }
+      } else {
+        if (item.summary) box.appendChild(el("p", "gist", item.summary));
+        if (showReason) box.appendChild(el("p", "reason", item.reason));
+      }
       var fold = sourceFold(item);
-      if (fold) box.appendChild(fold);
+      if (fold) {
+        if (lay) { var foldBox = sect(null, "sect-fold"); foldBox.appendChild(fold); box.appendChild(foldBox); }
+        else box.appendChild(fold);
+      }
 
       var actions = el("div", "actions");
+      var startBtn = canStart ? startControl("item", item.id, "btn") : null;
+      var replyBtn = canStart ? replyControl(item, lay ? "btn reply-primary" : "btn") : null;
+      if (lay && replyBtn && (kind === "waiting" || kind === "look")) actions.appendChild(replyBtn); // the one filled button comes first
       sourceLinks(item).forEach(function (link) {
         actions.appendChild(linkTo(link.href, link.label, "btn"));
       });
-      var startBtn = canStart ? startControl("item", item.id, "btn") : null;
-      var replyBtn = canStart ? replyControl(item, "btn") : null;
       var reacts = reactControl(item); // { group, below } for a Slack message from someone else, else null
       var reactPlaced = false;
       if (kind === "decision") {
         if (reacts) { actions.appendChild(reacts.group); reactPlaced = true; }
         actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
       } else if (kind === "commit") {
-        if (replyBtn) actions.appendChild(replyBtn);
+        if (replyBtn && !lay) actions.appendChild(replyBtn);
         if (reacts) { actions.appendChild(reacts.group); reactPlaced = true; }
         if (startBtn) actions.appendChild(startBtn);
         actions.appendChild(button("Already done", "btn", function () { act(item.id, "done"); }));
         actions.appendChild(laterControl(item, "btn subtle"));
       } else if (kind === "waiting" || kind === "look") {
-        if (replyBtn) actions.appendChild(replyBtn);
+        if (replyBtn && !lay) actions.appendChild(replyBtn);
         if (reacts) { actions.appendChild(reacts.group); reactPlaced = true; }
         if (taskFor(item)) {
           actions.appendChild(el("span", "made", "In your tasks"));
         } else {
-          var make = button("Make a task", "btn subtle", function () { taskFromItem(item, make); });
+          var make = button("Make a task", lay ? "btn" : "btn subtle", function () { taskFromItem(item, make); });
           actions.appendChild(make);
         }
         if (startBtn) actions.appendChild(startBtn);
         actions.appendChild(button("Dismiss", "btn subtle", function () { act(item.id, "dismiss"); }));
       }
       if (reacts && !reactPlaced) actions.appendChild(reacts.group); // closed and later items: after the links
-      if (actions.children.length) box.appendChild(actions);
-      if (reacts && reacts.below) box.appendChild(reacts.below);
+      if (lay) {
+        if (actions.children.length || (reacts && reacts.below)) {
+          var doBox = sect("What you can do", "sect-do");
+          if (actions.children.length) doBox.appendChild(actions);
+          if (reacts && reacts.below) doBox.appendChild(reacts.below);
+          box.appendChild(doBox);
+        }
+      } else {
+        if (actions.children.length) box.appendChild(actions);
+        if (reacts && reacts.below) box.appendChild(reacts.below);
+      }
       if (canStart && !startShown("item", item.id)) box.appendChild(instructBox("item", item.id, where));
       node.appendChild(box);
     }
@@ -3195,6 +3227,7 @@
   // What you see when you open a task in the list: everything it holds, read-only.
   function taskDetails(task, row, where, extra) {
     var open = task.status === "open";
+    var lay = where === "tasks"; // the card layout: each part in its own labelled box
     var box = el("div", "fold-body task-open");
     var any = false;
     var tags = el("p", "fine task-tags");
@@ -3203,44 +3236,74 @@
     box.appendChild(tags);
     var late = lateNote(task);
     if (late) box.appendChild(el("p", "trow-late", late));
-    if (task.context) { box.appendChild(el("p", "gist pre", task.context)); any = true; }
+    if (task.context) {
+      any = true;
+      if (lay) {
+        var ctx = sect("Summary");
+        ctx.appendChild(el("p", "gist pre", task.context));
+        box.appendChild(ctx);
+      } else box.appendChild(el("p", "gist pre", task.context));
+    }
     // Where the task came from, right under its background: the message it was made from, in a fold, with its link.
     var sourced = taskSourceNodes(task);
-    if (sourced.length) { any = true; sourced.forEach(function (n) { box.appendChild(n); }); }
+    if (sourced.length) {
+      any = true;
+      if (lay) {
+        var from = sect(null, "sect-fold");
+        sourced.forEach(function (n) { from.appendChild(n); });
+        box.appendChild(from);
+      } else sourced.forEach(function (n) { box.appendChild(n); });
+    }
     var steps = Array.isArray(task.steps) ? task.steps : [];
     if (steps.length) any = true;
-    if (steps.length || open) box.appendChild(stepsFold(task, steps, open));
-    if (task.notes) { any = true; box.appendChild(label("Notes")); box.appendChild(el("p", "gist pre", task.notes)); }
+    if (steps.length || open) {
+      var stepsNode = stepsFold(task, steps, open);
+      if (lay) { var stepsBox = sect(null, "sect-fold"); stepsBox.appendChild(stepsNode); box.appendChild(stepsBox); }
+      else box.appendChild(stepsNode);
+    }
+    if (task.notes) {
+      any = true;
+      if (lay) {
+        var notesBox = sect("Notes");
+        notesBox.appendChild(el("p", "gist pre", task.notes));
+        box.appendChild(notesBox);
+      } else { box.appendChild(label("Notes")); box.appendChild(el("p", "gist pre", task.notes)); }
+    }
     var links = (Array.isArray(task.links) ? task.links : []).map(function (l) {
       var href = l && l.url ? F.safeUrl(l.url) : null;
       return href ? { href: href, label: l.label || F.host(href) } : null;
     }).filter(Boolean);
     if (links.length) {
       any = true;
-      box.appendChild(label("Links"));
+      var linksBox = lay ? sect("Links") : box;
+      if (!lay) box.appendChild(label("Links"));
       var chips = el("p", "plan-links");
       links.forEach(function (l) { chips.appendChild(linkTo(l.href, l.label + " ↗", "chip")); });
-      box.appendChild(chips);
+      linksBox.appendChild(chips);
+      if (lay) box.appendChild(linksBox);
     }
     var related = Array.isArray(task.related) ? task.related : [];
     if (related.length) {
       any = true;
-      box.appendChild(label("Related work"));
-      related.forEach(function (r) { box.appendChild(relatedRow(r, false)); });
+      var relBox = lay ? sect("Related work") : box;
+      if (!lay) box.appendChild(label("Related work"));
+      related.forEach(function (r) { relBox.appendChild(relatedRow(r, false)); });
+      if (lay) box.appendChild(relBox);
     }
     if (!any) box.appendChild(el("p", "empty", "Nothing more written down yet."));
 
-    if (open && !startShown("task", task.id)) box.appendChild(instructBox("task", task.id, where));
+    if (open && !lay && !startShown("task", task.id)) box.appendChild(instructBox("task", task.id, where));
     var actions = el("div", "actions");
     actions.appendChild(button("Edit", "btn", function () { openTask(task); }));
     if (open) {
       actions.appendChild(button("Done", "btn", function () { finishTask(task, row); }));
       var begin = planControl(task, "btn");
       if (begin) actions.appendChild(begin);
-      actions.appendChild(button("Drop", "btn subtle", function () {
+      var dropBtn = button("Drop", "btn subtle", function () {
         saveTask(task.id, { status: "dropped", done_at: new Date().toISOString() });
         toast("Task dropped.", function () { saveTask(task.id, { status: "open", done_at: null }); });
-      }));
+      });
+      if (!lay) actions.appendChild(dropBtn);
       var urgentBox = el("label", "task-urgent");
       var urgentTick = document.createElement("input");
       urgentTick.type = "checkbox";
@@ -3260,8 +3323,14 @@
       });
       when.addEventListener("change", function () { saveTask(task.id, { horizon: when.value }); });
       actions.appendChild(when);
+      if (lay) actions.appendChild(dropBtn); // the quiet one goes last
     }
-    box.appendChild(actions);
+    if (lay) {
+      var doBox = sect("What you can do", "sect-do");
+      doBox.appendChild(actions);
+      box.appendChild(doBox);
+      if (open && !startShown("task", task.id)) box.appendChild(instructBox("task", task.id, where));
+    } else box.appendChild(actions);
     return box;
   }
 
@@ -6425,7 +6494,8 @@
     var box = el("div", "ins-box");
     box.setAttribute("data-instruct", key);
     var fid = "ins-" + kind + "-" + id + "-" + where;
-    var lab = el("label", "upd-label", "Tell the Desk what to do");
+    var cardLayout = where === "inbox" || where === "tasks"; // the card layout words it as one more way to act
+    var lab = el("label", "upd-label" + (cardLayout ? " sect-label" : ""), cardLayout ? "Or tell the Desk what to do" : "Tell the Desk what to do");
     lab.setAttribute("for", fid);
     box.appendChild(lab);
     var form = el("form", "ins-form");
@@ -6466,6 +6536,22 @@
   function startShown(kind, id) {
     var key = startKey(kind, id);
     return (!!startFor(kind, id) && !!state.startOpen[key]) || (kind === "item" && !!state.replyNew[key]);
+  }
+
+  // The card layout (inbox items and tasks): the content of a start or plan panel goes into one box of its own; the "tell
+  // the Desk" box, if there is one, stays apart, tinted. Nothing is added or removed. Other lists are left as they are.
+  function boxPanel(panel, where) {
+    if (where !== "inbox" && where !== "tasks") return panel;
+    var inner = el("div", "sect start-box");
+    var tell = null;
+    while (panel.firstChild) {
+      var part = panel.firstChild;
+      panel.removeChild(part);
+      if (part.classList && part.classList.contains("ins-box")) tell = part; else inner.appendChild(part);
+    }
+    panel.appendChild(inner);
+    if (tell) panel.appendChild(tell);
+    return panel;
   }
 
   function startPanel(kind, id, where) {
@@ -6615,7 +6701,7 @@
       foot.appendChild(button("Hide", "btn subtle", function () { delete state.startOpen[key]; delete state.startAsk[key]; delete state.replyNew[key]; delete state.replyAsk[key]; render(); }));
     }
     panel.appendChild(foot);
-    return panel;
+    return boxPanel(panel, where);
   }
 
   // ---------- Runs: the Desk doing a task in the background ----------
@@ -7237,7 +7323,7 @@
         actions.appendChild(button("Close", "btn subtle", function () { delete state.planOpen[task.id]; delete state.runMsg[key]; render(); }));
         panel.appendChild(actions);
       }
-      return panel;
+      return boxPanel(panel, where);
     }
     planBody(panel, run);
     plannedControls(panel, run, where, false);
@@ -7246,7 +7332,7 @@
       foot.appendChild(button("Hide", "btn subtle", function () { delete state.planOpen[task.id]; render(); }));
       panel.appendChild(foot);
     }
-    return panel;
+    return boxPanel(panel, where);
   }
 
   // Jumps to a run in Work and opens it.

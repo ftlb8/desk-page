@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 42)
+   Desk design system (version 43)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -27,6 +27,11 @@
    actions on their own line at the bottom, right-aligned.
    New since your last visit: a quiet "New" with a small dot (.new-mark) goes first in the quiet line of a row (or the head of a change line); it is never a pill and never coloured.
    Opening a row shows .fold-body under it: the same indent, background and chevron everywhere.
+   Inbox and Tasks are lists of separate cards (#list-inbox .item-row, #list-tasks .trow): surface, hairline border, 10px radius, the 3px
+   organisation edge, a 10px gap (8px on a phone). An opened card is clearly different: head --open-head, the card outlined in its
+   organisation colour with a 5px left edge, the opened area on --open-body under a --open-line rule. Inside it every part sits in its own
+   box (.sect: --section-bg, --open-line, radius 8px) under a small label (.sect-label): Summary, the original message (its fold
+   summary is the label), Steps, What you can do (Reply is the one filled button), and "Or tell the Desk what to do" (--tell-bg).
    Spacing 4/8/12/16/24; one radius for containers, one for controls; hairline borders; no shadows, no gradients.
    ========================================================================== */
 :root {
@@ -59,6 +64,13 @@
   --soon: var(--warning);
   --open-bg: var(--fold-bg);
   --ok-ink: var(--ok);
+  /* the opened inbox item or task (cards) */
+  --open-head: #ffffff;
+  --open-body: #e9e6dc;
+  --open-line: #cbc7ba;
+  --section-bg: #ffffff;
+  --tell-bg: #eaf2f8;
+  --tell-line: #b5cfe2;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -77,6 +89,12 @@
     --org-cea: #55c98a;
     --org-personal: #6fa8ee;
     --on-org: #161614;
+    --open-head: #33322c;
+    --open-body: #3b3a33;
+    --open-line: #55534a;
+    --section-bg: #2a2925;
+    --tell-bg: #18222c;
+    --tell-line: #3d5a73;
   }
 }
 
@@ -855,6 +873,70 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   .row-title { min-height: 32px; }
 }
 .row-sub .kd-project, .row-sub .project-pill { min-height: 0; }
+
+/* ---------- Cards: the Inbox list and the Tasks list (v43) ---------- */
+/* The list holds no surface of its own: each item or task is a card, with a gap between. Section headings stay. */
+#list-inbox .tsec, #list-tasks .tsec { background: none; border: 0; border-radius: 0; margin-bottom: 16px; }
+#list-inbox .tsec-head, #list-tasks .tsec-head { border-bottom: 0; padding: 8px 2px; }
+#list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows { background: none; border: 0; border-radius: 0; row-gap: 10px; }
+#list-inbox .tsec-body.rows > .empty, #list-tasks .tsec-body.rows > .empty { padding: 4px 2px; }
+#list-inbox .item-row, #list-tasks .trow {
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--org, var(--line)); border-radius: var(--radius);
+}
+/* The opened card: outlined in its organisation colour, the left edge 5px (the head's padding gives back the 2px, so the text stays put) */
+#list-inbox .item-row.is-open, #list-tasks .trow.is-open {
+  background: var(--open-body); border: 1px solid var(--org, var(--ink)); border-left-width: 5px;
+}
+#list-inbox .item-row.is-open > .row-head, #list-tasks .trow.is-open > .row-head {
+  background: var(--open-head); border-radius: 9px 9px 0 0; padding-left: 7px;
+}
+/* The opened area, and a start or plan panel under the card */
+#list-inbox .row > .fold-body, #list-tasks .row > .fold-body {
+  display: flex; flex-direction: column; gap: 10px; margin: 0 !important; padding: 14px; border-radius: 0 0 9px 9px;
+  background: var(--open-body); border-top: 1px solid var(--open-line);
+}
+#list-inbox .row > .fold-body + .fold-body, #list-tasks .row > .fold-body + .fold-body { border-top: 0; padding-top: 0; }
+#list-inbox .row > .fold-body > *, #list-tasks .row > .fold-body > * { margin: 0; min-width: 0; }
+/* Each part in its own labelled box */
+#list-inbox .sect, #list-tasks .sect {
+  background: var(--section-bg); border: 1px solid var(--open-line); border-radius: 8px; padding: 12px 14px; min-width: 0;
+}
+#list-inbox .sect > * + *, #list-tasks .sect > * + * { margin-top: 8px; }
+#list-inbox .sect-label, #list-tasks .sect-label { display: block; margin: 0 0 8px; font-size: 11px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+#list-inbox .sect .gist, #list-tasks .sect .gist { margin: 0; }
+#list-inbox .sect .reason { margin-top: 8px; }
+/* A fold in a box: its summary line is the label; the text shows under a 2px rule */
+#list-inbox .sect > details.message, #list-tasks .sect > details.message { margin: 0; }
+#list-inbox .sect > details.message > summary, #list-tasks .sect > details.message > summary {
+  min-height: 28px; padding: 0; color: var(--ink); font-size: var(--fs-quiet); font-weight: 600;
+}
+#list-inbox .sect .fold-body, #list-tasks .sect .fold-body {
+  margin: 8px 0 0; padding: 2px 0 2px 12px; background: none; border: 0; border-left: 2px solid var(--open-line); border-radius: 0;
+}
+#list-inbox .sect .fold-body .fold-body, #list-tasks .sect .fold-body .fold-body { background: none; }
+#list-inbox .sect > .hint, #list-tasks .sect > .hint, #list-tasks .sect > .source-meta, #list-tasks .sect > .fine { margin-top: 0; }
+#list-inbox .sect > .hint + *, #list-tasks .sect > .hint + * { margin-top: 4px; }
+/* What you can do */
+#list-inbox .sect .actions, #list-tasks .sect .actions { margin-top: 0; gap: 8px; }
+.btn.reply-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.btn.reply-primary:hover { border-color: var(--ink); }
+#list-inbox .sect .actions .react-group { margin: 0 4px; padding: 0 8px; border-left: 1px solid var(--open-line); border-right: 1px solid var(--open-line); }
+#list-inbox .sect .react-line { margin: 8px 0 0; }
+/* Or tell the Desk what to do */
+#list-inbox .ins-box, #list-tasks .ins-box { margin: 0; padding: 12px 14px; background: var(--tell-bg); border: 1px solid var(--tell-line); border-radius: 8px; }
+#list-inbox .ins-box > .sect-label, #list-tasks .ins-box > .sect-label { margin: 0 0 8px; color: var(--accent); }
+#list-inbox .ins-line input, #list-tasks .ins-line input { background: var(--surface); }
+#list-inbox .start-box > .owed-head:first-child, #list-tasks .start-box > .owed-head:first-child { margin-top: 0; }
+@media (max-width: 600px) {
+  #list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows { row-gap: 8px; }
+  #list-inbox .row > .fold-body, #list-tasks .row > .fold-body { padding: 12px; }
+  #list-inbox .sect, #list-tasks .sect { padding: 12px; }
+  #list-inbox .row .btn, #list-tasks .row .btn, #list-inbox .row .primary, #list-tasks .row .primary,
+  #list-inbox .row .quiet, #list-tasks .row .quiet, #list-tasks .row .task-when { min-height: 44px; }
+  #list-inbox .sect > details.message > summary, #list-tasks .sect > details.message > summary { min-height: 44px; }
+  #list-inbox .sect .tstep, #list-tasks .sect .tstep, #list-tasks .start-box .tstep { min-height: 44px; }
+  #list-inbox .sect .actions .react-group { margin: 0; padding: 0 4px; }
+}
 
 /* ---------- Your updates, and Tell the Desk what to do ---------- */
 .upd-label { display: block; margin: 12px 0 4px; font-size: var(--fs-quiet); color: var(--muted); font-weight: 600; }
