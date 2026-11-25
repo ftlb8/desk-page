@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Desk design system (version 44)
+   Desk design system (version 45)
 
    Attention has three looks, used the same way in every view:
      Needs you  red (--danger) for now, overdue, urgent, failed, past the limit;
@@ -881,43 +881,43 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 /* The list holds no surface of its own: each item or task is a card, with a gap between. Section headings stay. */
 #list-inbox .tsec,
 #list-tasks .tsec,
-#cv-inbox,
+#cv-inbox, #cv-calls,
 #cv-tasks { background: none; border: 0; border-radius: 0; margin-bottom: 16px; }
 #list-inbox .tsec-head,
 #list-tasks .tsec-head,
-#cv-inbox .tsec-head,
+#cv-inbox .tsec-head, #cv-calls .tsec-head,
 #cv-tasks .tsec-head { border-bottom: 0; padding: 8px 2px; }
 #list-inbox .tsec-body.rows,
 #list-tasks .tsec-body.rows,
-#cv-inbox .tsec-body.rows,
+#cv-inbox .tsec-body.rows, #cv-calls .tsec-body.rows,
 #cv-tasks .tsec-body.rows { background: none; border: 0; border-radius: 0; row-gap: 10px; }
 #list-inbox .tsec-body.rows > .empty,
 #list-tasks .tsec-body.rows > .empty,
-#cv-inbox .tsec-body.rows > .empty,
+#cv-inbox .tsec-body.rows > .empty, #cv-calls .tsec-body.rows > .empty,
 #cv-tasks .tsec-body.rows > .empty { padding: 4px 2px; }
 #list-inbox .item-row,
 #list-tasks .trow,
-#cv-inbox .item-row,
+#cv-inbox .item-row, #cv-calls .item-row,
 #cv-tasks .trow {
   background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--org, var(--line)); border-radius: var(--radius);
 }
 /* The opened card: outlined in its organisation colour, the left edge 5px (the head's padding gives back the 2px, so the text stays put) */
 #list-inbox .item-row.is-open,
 #list-tasks .trow.is-open,
-#cv-inbox .item-row.is-open,
+#cv-inbox .item-row.is-open, #cv-calls .item-row.is-open,
 #cv-tasks .trow.is-open {
   background: var(--open-body); border: 1px solid var(--org, var(--ink)); border-left-width: 5px;
 }
 #list-inbox .item-row.is-open > .row-head,
 #list-tasks .trow.is-open > .row-head,
-#cv-inbox .item-row.is-open > .row-head,
+#cv-inbox .item-row.is-open > .row-head, #cv-calls .item-row.is-open > .row-head,
 #cv-tasks .trow.is-open > .row-head {
   background: var(--open-head); border-radius: 9px 9px 0 0; padding-left: 7px;
 }
 /* The opened area, and a start or plan panel under the card */
 #list-inbox .row > .fold-body,
 #list-tasks .row > .fold-body,
-#cv-inbox .row > .fold-body,
+#cv-inbox .row > .fold-body, #cv-calls .row > .fold-body,
 #cv-tasks .row > .fold-body {
   display: flex; flex-direction: column; gap: 10px; margin: 0 !important; padding: 14px; border-radius: 0 0 9px 9px;
   background: var(--open-body); border-top: 1px solid var(--open-line);
@@ -933,7 +933,7 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 /* Each part in its own labelled box */
 #list-inbox .sect,
 #list-tasks .sect,
-#cv-inbox .sect,
+#cv-inbox .sect, #cv-calls .sect,
 #cv-tasks .sect {
   background: var(--section-bg); border: 1px solid var(--open-line); border-radius: 8px; padding: 12px 14px; min-width: 0;
 }
@@ -943,40 +943,40 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 #cv-tasks .sect > * + * { margin-top: 8px; }
 #list-inbox .sect-label,
 #list-tasks .sect-label,
-#cv-inbox .sect-label,
+#cv-inbox .sect-label, #cv-calls .sect-label,
 #cv-tasks .sect-label { display: block; margin: 0 0 8px; font-size: 11px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 #list-inbox .sect .gist,
 #list-tasks .sect .gist,
-#cv-inbox .sect .gist,
+#cv-inbox .sect .gist, #cv-calls .sect .gist,
 #cv-tasks .sect .gist { margin: 0; }
 #list-inbox .sect .reason,
-#cv-inbox .sect .reason { margin-top: 8px; }
+#cv-inbox .sect .reason, #cv-calls .sect .reason { margin-top: 8px; }
 /* A fold in a box: its summary line is the label; the text shows under a 2px rule */
 #list-inbox .sect > details.message,
 #list-tasks .sect > details.message,
-#cv-inbox .sect > details.message,
+#cv-inbox .sect > details.message, #cv-calls .sect > details.message,
 #cv-tasks .sect > details.message { margin: 0; }
 #list-inbox .sect > details.message > summary,
 #list-tasks .sect > details.message > summary,
-#cv-inbox .sect > details.message > summary,
+#cv-inbox .sect > details.message > summary, #cv-calls .sect > details.message > summary,
 #cv-tasks .sect > details.message > summary {
   min-height: 28px; padding: 0; color: var(--ink); font-size: var(--fs-quiet); font-weight: 600;
 }
 #list-inbox .sect .fold-body,
 #list-tasks .sect .fold-body,
-#cv-inbox .sect .fold-body,
+#cv-inbox .sect .fold-body, #cv-calls .sect .fold-body,
 #cv-tasks .sect .fold-body {
   margin: 8px 0 0; padding: 2px 0 2px 12px; background: none; border: 0; border-left: 2px solid var(--open-line); border-radius: 0;
 }
 #list-inbox .sect .fold-body .fold-body,
 #list-tasks .sect .fold-body .fold-body,
-#cv-inbox .sect .fold-body .fold-body,
+#cv-inbox .sect .fold-body .fold-body, #cv-calls .sect .fold-body .fold-body,
 #cv-tasks .sect .fold-body .fold-body { background: none; }
 #list-inbox .sect > .hint,
 #list-tasks .sect > .hint,
 #list-tasks .sect > .source-meta,
 #list-tasks .sect > .fine,
-#cv-inbox .sect > .hint,
+#cv-inbox .sect > .hint, #cv-calls .sect > .hint,
 #cv-tasks .sect > .hint,
 #cv-tasks .sect > .source-meta,
 #cv-tasks .sect > .fine { margin-top: 0; }
@@ -987,49 +987,49 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 /* What you can do */
 #list-inbox .sect .actions,
 #list-tasks .sect .actions,
-#cv-inbox .sect .actions,
+#cv-inbox .sect .actions, #cv-calls .sect .actions,
 #cv-tasks .sect .actions { margin-top: 0; gap: 8px; }
 .btn.reply-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 .btn.reply-primary:hover { border-color: var(--ink); }
 #list-inbox .sect .actions .react-group,
-#cv-inbox .sect .actions .react-group { margin: 0 4px; padding: 0 8px; border-left: 1px solid var(--open-line); border-right: 1px solid var(--open-line); }
+#cv-inbox .sect .actions .react-group, #cv-calls .sect .actions .react-group { margin: 0 4px; padding: 0 8px; border-left: 1px solid var(--open-line); border-right: 1px solid var(--open-line); }
 #list-inbox .sect .react-line,
-#cv-inbox .sect .react-line { margin: 8px 0 0; }
+#cv-inbox .sect .react-line, #cv-calls .sect .react-line { margin: 8px 0 0; }
 /* Or tell the Desk what to do */
 #list-inbox .ins-box,
 #list-tasks .ins-box,
-#cv-inbox .ins-box,
+#cv-inbox .ins-box, #cv-calls .ins-box,
 #cv-tasks .ins-box { margin: 0; padding: 12px 14px; background: var(--tell-bg); border: 1px solid var(--tell-line); border-radius: 8px; }
 #list-inbox .ins-box > .sect-label,
 #list-tasks .ins-box > .sect-label,
-#cv-inbox .ins-box > .sect-label,
+#cv-inbox .ins-box > .sect-label, #cv-calls .ins-box > .sect-label,
 #cv-tasks .ins-box > .sect-label { margin: 0 0 8px; color: var(--accent); }
 #list-inbox .ins-line input,
 #list-tasks .ins-line input,
-#cv-inbox .ins-line input,
+#cv-inbox .ins-line input, #cv-calls .ins-line input,
 #cv-tasks .ins-line input { background: var(--surface); }
 #list-inbox .start-box > .owed-head:first-child,
 #list-tasks .start-box > .owed-head:first-child,
-#cv-inbox .start-box > .owed-head:first-child,
+#cv-inbox .start-box > .owed-head:first-child, #cv-calls .start-box > .owed-head:first-child,
 #cv-tasks .start-box > .owed-head:first-child { margin-top: 0; }
 @media (max-width: 600px) {
-  #list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows, #cv-inbox .tsec-body.rows, #cv-tasks .tsec-body.rows { row-gap: 8px; }
-  #list-inbox .row > .fold-body, #list-tasks .row > .fold-body, #cv-inbox .row > .fold-body, #cv-tasks .row > .fold-body { padding: 12px; }
-  #list-inbox .sect, #list-tasks .sect, #cv-inbox .sect, #cv-tasks .sect { padding: 12px; }
+  #list-inbox .tsec-body.rows, #list-tasks .tsec-body.rows, #cv-inbox .tsec-body.rows, #cv-calls .tsec-body.rows, #cv-tasks .tsec-body.rows { row-gap: 8px; }
+  #list-inbox .row > .fold-body, #list-tasks .row > .fold-body, #cv-inbox .row > .fold-body, #cv-calls .row > .fold-body, #cv-tasks .row > .fold-body { padding: 12px; }
+  #list-inbox .sect, #list-tasks .sect, #cv-inbox .sect, #cv-calls .sect, #cv-tasks .sect { padding: 12px; }
   #list-inbox .row .btn, #list-tasks .row .btn, #list-inbox .row .primary, #list-tasks .row .primary,
   #list-inbox .row .quiet, #list-tasks .row .quiet, #list-tasks .row .task-when,
-  #cv-inbox .row .btn, #cv-tasks .row .btn, #cv-inbox .row .primary, #cv-tasks .row .primary,
-  #cv-inbox .row .quiet, #cv-tasks .row .quiet, #cv-tasks .row .task-when { min-height: 44px; }
+  #cv-inbox .row .btn, #cv-calls .row .btn, #cv-tasks .row .btn, #cv-inbox .row .primary, #cv-calls .row .primary, #cv-tasks .row .primary,
+  #cv-inbox .row .quiet, #cv-calls .row .quiet, #cv-tasks .row .quiet, #cv-tasks .row .task-when { min-height: 44px; }
   #list-inbox .sect > details.message > summary, #list-tasks .sect > details.message > summary,
-  #cv-inbox .sect > details.message > summary, #cv-tasks .sect > details.message > summary { min-height: 44px; }
+  #cv-inbox .sect > details.message > summary, #cv-calls .sect > details.message > summary, #cv-tasks .sect > details.message > summary { min-height: 44px; }
   #list-inbox .sect .tstep, #list-tasks .sect .tstep, #list-tasks .start-box .tstep,
-  #cv-inbox .sect .tstep, #cv-tasks .sect .tstep, #cv-tasks .start-box .tstep { min-height: 44px; }
-  #list-inbox .sect .actions .react-group, #cv-inbox .sect .actions .react-group { margin: 0; padding: 0 4px; }
+  #cv-inbox .sect .tstep, #cv-calls .sect .tstep, #cv-tasks .sect .tstep, #cv-tasks .start-box .tstep { min-height: 44px; }
+  #list-inbox .sect .actions .react-group, #cv-inbox .sect .actions .react-group, #cv-calls .sect .actions .react-group { margin: 0; padding: 0 4px; }
 }
 
 /* ---------- Cards: Today and the Projects list (v44) ---------- */
 /* Today: the two blocks that hold inbox items and tasks are lists of cards too, with the rules above. The block's own gap does the spacing. */
-#cv-inbox, #cv-tasks { margin-bottom: 0; }
+#cv-inbox, #cv-calls, #cv-tasks { margin-bottom: 0; }
 /* Projects: each project or area is a card; the groups hold no surface of their own. */
 #list-proj .grp > .rows { background: none; border: 0; border-radius: 0; row-gap: 10px; margin-top: 4px; }
 #list-proj .grp > .rows > .empty { padding: 4px 2px; }
@@ -1114,3 +1114,35 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   .upd-row > div { flex: 1 1 100%; }
   .change-acts .btn { min-height: 40px; }
 }
+
+/* ---------- After your calls (v45) ---------- */
+/* The card is the Today card of the v43/v44 look (the rules above are shared with #cv-inbox). Inside it each part sits in a .sect box:
+   Summary, Tasks to add, Project updates, What you can do. A proposal is the text (title weight), one quiet line, a fold and two buttons. */
+#cv-calls .call-prop { padding: 12px 0 0; }
+#cv-calls .call-prop:first-of-type { padding-top: 0; }
+#cv-calls .sect > .sect-label + .call-prop { padding-top: 0; }
+#cv-calls .call-prop + .call-prop { margin-top: 12px; border-top: 1px solid var(--open-line); }
+#cv-calls .call-text { margin: 0; font-size: var(--fs-title-sm); font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+#cv-calls .call-sub { margin: 2px 0 0; overflow-wrap: anywhere; }
+#cv-calls .call-prop > details.message { margin: 8px 0 0; }
+#cv-calls .call-prop > details.message > summary { min-height: 28px; padding: 0; color: var(--ink); font-size: var(--fs-quiet); font-weight: 600; }
+#cv-calls .call-prop .fold-body { margin: 8px 0 0; padding: 2px 0 2px 12px; background: none; border: 0; border-left: 2px solid var(--open-line); border-radius: 0; }
+#cv-calls .call-quote { margin: 0; overflow-wrap: anywhere; }
+#cv-calls .call-basis { margin: 4px 0 0; }
+#cv-calls .call-context { margin: 8px 0 0; overflow-wrap: anywhere; }
+#cv-calls .call-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 8px 0 0; font-size: var(--fs-quiet); color: var(--muted); }
+#cv-calls .call-pick select { max-width: 100%; min-height: 32px; background: var(--surface); }
+#cv-calls .call-acts { margin: 8px 0 0; }
+#cv-calls .call-says { margin: 0; }
+#cv-calls .call-reason { margin: 4px 0 0; overflow-wrap: anywhere; }
+#cv-calls .call-status .actions { margin-top: 8px; }
+#cv-calls .call-foot + .fine { margin: 8px 0 0; }
+#cv-calls .call-busy, #cv-calls .call-note, #cv-calls .call-error { margin: 0; padding: 0 2px; overflow-wrap: anywhere; }
+#cv-calls .row > .fold-body > .error { color: var(--danger); font-size: var(--fs-quiet); }
+@media (max-width: 600px) {
+  #cv-calls .call-prop > details.message > summary { min-height: 44px; }
+  #cv-calls .call-pick select { min-height: 44px; font-size: 16px; width: 100%; }
+  #cv-calls .call-pick label { flex: 1 1 100%; }
+  #cv-calls .call-acts .btn, #cv-calls .call-foot .btn, #cv-calls .row-acts .btn { min-height: 44px; }
+}
+#cv-calls .call-busy { font-weight: 400; color: var(--muted); }

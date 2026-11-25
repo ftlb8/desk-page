@@ -121,6 +121,14 @@
     reactOff: {},     // space -> true once the Desk learned that reactions are not turned on for that workspace (this page session only)
     reactNote: {},    // item id -> true after a check mark was confirmed: the item closes when Slack reports it
     fresh: { starts: {}, covers: {}, runs: {}, preps: {} }, // rows just received from a function, kept until a load has them too
+    followups: [],    // the proposals after your calls (call_followups of the last 7 days)
+    callOpen: {},     // follow-up id -> true/false once you opened or closed its card (cards with something to review start open)
+    callWork: {},     // follow-up id -> "run" | "all" | "rest" while the function or a batch is on its way
+    callProp: {},     // "followup:proposal" -> true while that proposal is being added or dismissed
+    callLocal: {},    // "followup:proposal" -> { fid, pid, state, ref }: what you just decided, kept until a load has it too
+    callErr: {},      // follow-up id -> the plain error from the last try
+    callNote: {},     // follow-up id -> what the function said the last time it ran
+    callPick: {},     // "followup:proposal" -> the project you chose for an update that had none
     people: {},   // "space:userId" -> { name, is_vip, is_key }
     channels: {}, // "space:channelId" -> { name, kind }
     accounts: {}, // space -> { slack_url }
@@ -5627,11 +5635,507 @@
     render();
   }
 
+  // ---------- After your calls ----------
+  // The call-followup function reads the Granola note and the shared notes of your one-to-one calls and stores PROPOSED
+  // tasks and project updates (call_followups). Nothing is created until you click Add. Add makes the task (saveDraft's row
+  // shape) or the project update (the "Add an update" box's insert, then project-refresh) and then records the decision with
+  // set_followup_proposal. Dismiss only records it. Check now, Try again and Check again only run the function.
+
+  var CALL_COLS = "id, space, meeting_id, status, person, meeting_title, meeting_on, note_url, summary, proposals, attempts, error, ran_at, created_at, updated_at";
+  var CALL_DAYS = 7;
+  var CALL_FAIL = "The follow-up did not finish. Try again in a minute.";
+  var CALL_BASIS = { transcript: "From the transcript", summary: "From the Granola summary", notes: "From your meeting notes" };
+
+  // The proposals of a row as a clean list (the column may arrive as text).
+  function callList(value) {
+    var list = value;
+    if (typeof list === "string") {
+      try { list = JSON.parse(list); } catch (_) { list = []; }
+    }
+    return Array.isArray(list) ? list.filter(function (p) {
+      return p && p.id !== undefined && p.id !== null && (p.kind === "task" || p.kind === "update") && typeof p.text === "string" && p.text.trim();
+    }) : [];
+  }
+
+  // Keeps what you just decided until a load has it too, so a slow save never brings a proposal back.
+  function mergeFollowups(rows) {
+    rows.forEach(function (f) { f.proposals = callList(f.proposals); });
+    Object.keys(state.callLocal).forEach(function (k) {
+      var o = state.callLocal[k];
+      var f = rows.filter(function (r) { return String(r.id) === o.fid; })[0];
+      var p = f ? f.proposals.filter(function (x) { return String(x.id) === o.pid; })[0] : null;
+      if (!p || (p.state || "open") === o.state) delete state.callLocal[k];
+    });
+    return rows;
+  }
+
+  function callKey(f, p) { return f.id + ":" + p.id; }
+
+  function callStateOf(f, p) {
+    var o = state.callLocal[callKey(f, p)];
+    return o ? o.state : (p.state || "open");
+  }
+
+  function openProposals(f) {
+    return callList(f.proposals).filter(function (p) { return callStateOf(f, p) === "open"; });
+  }
+
+  function followupById(id) {
+    return state.followups.filter(function (f) { return String(f.id) === String(id); })[0] || null;
+  }
+
+  function proposalById(f, id) {
+    return callList(f.proposals).filter(function (p) { return String(p.id) === String(id); })[0] || null;
+  }
+
+  // Ready with something to review, or still waiting or failed for a call of the last 48 hours.
+  function callIsShown(f) {
+    if (!inFilter(f)) return false;
+    if (f.status === "ready") return openProposals(f).length > 0;
+    if (f.status === "waiting" || f.status === "failed") return !!f.meeting_on && daysFrom(f.meeting_on) >= -2;
+    return false;
+  }
+
+  function callIsOpen(f) {
+    if (state.callOpen[f.id] !== undefined) return state.callOpen[f.id];
+    return true; // cards with something to review start open; so do the waiting and failed ones, which are short
+  }
+
+  function callFirst(f) {
+    return String(f.person || "").trim().split(/\s+/)[0] || "";
+  }
+
+  // "Wed 25 Nov"
+  function callDay(day) {
+    var d = new Date(day + "T12:00:00");
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString([], { weekday: "short" }) + " " + shortDate(d);
+  }
+
+  function callSourceLabel(f) {
+    var d = new Date(f.meeting_on + "T12:00:00");
+    var first = callFirst(f);
+    return (first ? "Call with " + first : "Call") + (isNaN(d.getTime()) ? "" : ", " + shortDate(d));
+  }
+
+  function callSourceLine(f) {
+    var d = new Date(f.meeting_on + "T12:00:00");
+    var first = callFirst(f);
+    return "From your call" + (first ? " with " + first : "") + (isNaN(d.getTime()) ? "" : " on " + shortDate(d)) + ".";
+  }
+
+  // The project a proposal names, when it is loaded and belongs to the same organisation; else the one you chose.
+  function callProject(f, p) {
+    var named = projectById(p.project_id);
+    if (named && named.space === f.space) return named;
+    var chosen = projectById(state.callPick[callKey(f, p)]);
+    return chosen && chosen.space === f.space ? chosen : null;
+  }
+
+  function callParts(f) {
+    return [f.person, f.meeting_title, f.summary].concat(callList(f.proposals).map(function (p) { return p.text; }));
+  }
+
+  // Shows a problem in the card; when the card is already gone it goes to the page's notice line.
+  function callProblem(f, text) {
+    state.callErr[f.id] = text;
+    if (!callIsShown(f)) notice(text);
+  }
+
+  function focusCall(id) {
+    var t = onPage('[data-call="' + id + '"] .row-title');
+    if (t) t.focus({ preventScroll: true });
+  }
+
+  // Records the decision; returns "" when it worked, else the plain reason.
+  async function recordProposal(f, p, to, ref) {
+    try {
+      var res = await sb.rpc("set_followup_proposal", { p_followup: f.id, p_proposal: String(p.id), p_state: to, p_ref: ref === undefined ? null : ref });
+      return res && res.error ? String(res.error.message || "unknown error") : "";
+    } catch (e) {
+      return e && e.message ? String(e.message) : "unknown error";
+    }
+  }
+
+  // Dismiss: the proposal leaves at once; if it cannot be saved it comes back with the error.
+  async function dismissProposal(fid, pid) {
+    var f = followupById(fid);
+    var p = f ? proposalById(f, pid) : null;
+    if (!f || !p) return true;
+    var key = callKey(f, p);
+    if (state.callProp[key] || callStateOf(f, p) !== "open") return true;
+    state.callProp[key] = true;
+    state.callLocal[key] = { fid: String(f.id), pid: String(p.id), state: "dismissed", ref: null };
+    delete state.callErr[f.id];
+    render();
+    var why = await recordProposal(f, p, "dismissed", null);
+    delete state.callProp[key];
+    if (why) {
+      delete state.callLocal[key];
+      callProblem(f, "Not dismissed: " + why);
+      render();
+      return false;
+    }
+    render();
+    focusCall(f.id);
+    return true;
+  }
+
+  // The task row, the same columns saveDraft writes.
+  async function insertCallTask(f, p) {
+    var proj = callProject(f, p);
+    var href = httpsLink(f.note_url);
+    var row = {
+      space: f.space,
+      title: p.text.trim(),
+      project_id: proj ? proj.id : null,
+      horizon: "week",
+      urgent: false,
+      due_on: /^\d{4}-\d{2}-\d{2}$/.test(p.due_on || "") ? p.due_on : null,
+      repeat: null,
+      context: [p.context ? String(p.context).trim() : "", callSourceLine(f)].filter(Boolean).join("\n"),
+      notes: null,
+      links: href ? [{ label: "Granola note", url: href }] : [],
+      steps: [],
+      related: [],
+    };
+    var res;
+    try {
+      res = await sb.from("tasks").insert(row).select("id").single();
+    } catch (e) {
+      res = { error: e };
+    }
+    if (!res || res.error || !res.data) return { why: "Not added: " + (res && res.error && res.error.message ? res.error.message : "unknown error") };
+    return { id: res.data.id };
+  }
+
+  // The project update, the same insert as the Add an update box, then the rewrite of how things stand.
+  async function insertCallUpdate(f, p) {
+    var owner = callProject(f, p);
+    if (!owner) return { why: "Choose a project for this update first." };
+    var text = p.text.trim();
+    if (text.length > UPDATE_MAX) text = text.slice(0, UPDATE_MAX - 3) + "...";
+    var day = /^\d{4}-\d{2}-\d{2}$/.test(f.meeting_on || "") && f.meeting_on <= localDay() ? f.meeting_on : localDay();
+    var row = { project_id: owner.id, space: owner.space, changed_on: day, text: text, origin: "you", source_label: callSourceLabel(f) };
+    var href = httpsLink(f.note_url);
+    if (href) row.source_url = href;
+    var res;
+    try {
+      res = await sb.from("project_changes").insert(row).select(CHANGE_COLS).single();
+    } catch (e) {
+      res = { error: e };
+    }
+    if (!res || res.error || !res.data) return { why: "Not added: " + (res && res.error && res.error.message ? res.error.message : "unknown error") };
+    state.changes = (state.changes || []).concat([res.data]).sort(newestChange);
+    state.log = {};
+    return { id: res.data.id, owner: owner };
+  }
+
+  // Add: makes the task or the update, then records it. Returns true when it worked.
+  async function addProposal(fid, pid, quiet) {
+    var f = followupById(fid);
+    var p = f ? proposalById(f, pid) : null;
+    if (!f || !p) return true;
+    var key = callKey(f, p);
+    if (state.callProp[key] || callStateOf(f, p) !== "open") return true;
+    var isTask = p.kind === "task";
+    if (!isTask && !callProject(f, p)) {
+      callProblem(f, "Choose a project for this update first.");
+      render();
+      return false;
+    }
+    state.callProp[key] = true;
+    delete state.callErr[f.id];
+    render();
+    var made = isTask ? await insertCallTask(f, p) : await insertCallUpdate(f, p);
+    if (made.why) {
+      delete state.callProp[key];
+      callProblem(f, made.why);
+      render();
+      return false;
+    }
+    // From here the task or update exists, so it is never made twice: it stays added on this page even if recording fails.
+    state.callLocal[key] = { fid: String(f.id), pid: String(p.id), state: "added", ref: made.id };
+    var why = await recordProposal(f, p, "added", made.id);
+    if (why) why = await recordProposal(f, p, "added", made.id);
+    delete state.callProp[key];
+    if (why) callProblem(f, "The " + (isTask ? "task" : "update") + " was added, but this list could not record it: " + why + ". Do not add it again.");
+    else if (!quiet) toast(isTask ? "Added to your tasks." : "Added to the project.");
+    render();
+    if (!made.owner) load();
+    else refreshProjects((parentOf(made.owner) || made.owner).id, refreshChain(made.owner), false);
+    focusCall(f.id);
+    return !why;
+  }
+
+  // Add all: every open proposal one after another. An update that still needs a project is left for you.
+  async function addAllProposals(fid) {
+    var f = followupById(fid);
+    if (!f || state.callWork[f.id]) return;
+    state.callWork[f.id] = "all";
+    delete state.callErr[f.id];
+    render();
+    var skipped = 0;
+    var stopped = false;
+    var todo = openProposals(f).map(function (p) { return String(p.id); });
+    for (var i = 0; i < todo.length && !stopped; i++) {
+      var cur = followupById(fid);
+      var p = cur ? proposalById(cur, todo[i]) : null;
+      if (!p || callStateOf(cur, p) !== "open") continue;
+      if (p.kind === "update" && !callProject(cur, p)) { skipped++; continue; }
+      stopped = !(await addProposal(fid, todo[i], true));
+    }
+    delete state.callWork[fid];
+    var after = followupById(fid);
+    if (after && !stopped) {
+      if (skipped) state.callErr[fid] = skipped + (skipped === 1 ? " update needs" : " updates need") + " a project before it can be added.";
+      else if (!callIsShown(after)) toast("Everything was added.");
+    }
+    render();
+    if (after && callIsShown(after)) focusCall(fid);
+  }
+
+  async function dismissRest(fid) {
+    var f = followupById(fid);
+    if (!f || state.callWork[f.id]) return;
+    state.callWork[f.id] = "rest";
+    delete state.callErr[f.id];
+    render();
+    var todo = openProposals(f).map(function (p) { return String(p.id); });
+    for (var i = 0; i < todo.length; i++) {
+      if (!(await dismissProposal(fid, todo[i]))) break;
+    }
+    delete state.callWork[fid];
+    render();
+  }
+
+  // Reads one follow-up again (after the function ran) and puts it in place of the one on the page.
+  async function reloadFollowup(id) {
+    var res;
+    try {
+      res = await sb.from("call_followups").select(CALL_COLS).eq("id", id);
+    } catch (e) {
+      res = { error: e };
+    }
+    var row = res && !res.error && Array.isArray(res.data) ? res.data[0] : null;
+    if (!row) { load(); return; } // the row could not be read alone: the full load brings it
+    var kept = mergeFollowups([row])[0];
+    var found = false;
+    state.followups = state.followups.map(function (x) {
+      if (String(x.id) !== String(kept.id)) return x;
+      found = true;
+      return kept;
+    });
+    if (!found) state.followups.push(kept);
+  }
+
+  // Check now, Try again, Check again: runs the function for the call's meeting (up to about 90 seconds), then reloads.
+  async function runFollowup(fid) {
+    var f = followupById(fid);
+    if (!f || state.callWork[f.id]) return;
+    state.callWork[f.id] = "run";
+    delete state.callErr[f.id];
+    delete state.callNote[f.id];
+    render();
+    var res;
+    try {
+      res = await sb.functions.invoke("call-followup", { body: { meeting_id: f.meeting_id } });
+    } catch (e) {
+      res = { error: e };
+    }
+    var d = res && !res.error ? res.data : null;
+    delete state.callWork[fid];
+    if (d && d.ok === true) {
+      var words = typeof d.note === "string" ? d.note.trim() : "";
+      if (words) state.callNote[fid] = words;
+      await reloadFollowup(d.followup_id !== undefined && d.followup_id !== null ? d.followup_id : fid);
+      var again = followupById(fid);
+      if (!again || !callIsShown(again)) toast(words || "Nothing to add from this call.");
+      render();
+    } else {
+      state.callErr[fid] = (await failureWords(res, CALL_FAIL)).words;
+      render();
+    }
+  }
+
+  function callWhyFold(f, p) {
+    var quote = p.quote ? String(p.quote).trim() : "";
+    var context = p.kind === "task" && p.context ? String(p.context).trim() : "";
+    var basis = CALL_BASIS[p.basis] || "";
+    if (!quote && !context && !basis) return null;
+    var fold = el("details", "message call-why");
+    fold.appendChild(el("summary", null, "What it rests on"));
+    var inside = foldIn(fold);
+    if (quote) inside.appendChild(el("p", "call-quote", "\u201c" + quote + "\u201d"));
+    if (basis) inside.appendChild(el("p", "fine call-basis", basis));
+    if (context) inside.appendChild(el("p", "call-context", context));
+    return fold;
+  }
+
+  function proposalRow(f, p, locked) {
+    var key = callKey(f, p);
+    var busy = !!state.callProp[key] || locked;
+    var row = el("div", "call-prop");
+    row.setAttribute("data-proposal", String(p.id));
+    row.setAttribute("data-kind", p.kind);
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", p.text);
+    row.appendChild(el("p", "call-text", p.text));
+    var proj = callProject(f, p);
+    var bits = [proj ? projectLabel(proj) : "No project"];
+    if (p.kind === "task" && /^\d{4}-\d{2}-\d{2}$/.test(p.due_on || "")) bits.push("due " + callDay(p.due_on));
+    row.appendChild(el("p", "reason call-sub", bits.join(" \u00b7 ")));
+    var pick = null;
+    if (p.kind === "update" && !projectById(p.project_id)) {
+      var choose = el("div", "call-pick");
+      var lab = el("label", null, "Project for this update");
+      var sel = document.createElement("select");
+      sel.id = "call-pick-" + f.id + "-" + p.id;
+      lab.setAttribute("for", sel.id);
+      var none = el("option", null, "Choose a project");
+      none.value = "";
+      sel.appendChild(none);
+      addProjectOptions(sel, f.space);
+      sel.value = state.callPick[key] ? String(state.callPick[key]) : "";
+      choose.appendChild(lab);
+      choose.appendChild(sel);
+      row.appendChild(choose);
+      pick = sel;
+    }
+    var fold = callWhyFold(f, p);
+    if (fold) row.appendChild(fold);
+    var acts = el("div", "actions call-acts");
+    var add = button(state.callProp[key] ? "Adding..." : "Add", "btn small call-add", function () { addProposal(f.id, p.id, false); });
+    add.disabled = busy || (p.kind === "update" && !proj);
+    var dismiss = button("Dismiss", "btn small subtle call-dismiss", function () { dismissProposal(f.id, p.id); });
+    dismiss.disabled = busy;
+    if (pick) {
+      pick.disabled = busy;
+      pick.addEventListener("change", function () {
+        if (pick.value) state.callPick[key] = pick.value; else delete state.callPick[key];
+        var chosen = !!pick.value;
+        add.disabled = !chosen || busy;
+        var sub = row.querySelector(".call-sub");
+        var pr = projectById(pick.value);
+        if (sub) sub.textContent = chosen && pr ? projectLabel(pr) : "No project";
+      });
+    }
+    acts.appendChild(add);
+    acts.appendChild(dismiss);
+    row.appendChild(acts);
+    return row;
+  }
+
+  function proposalBox(f, label, list, locked) {
+    var box = sect(label);
+    list.forEach(function (p) { box.appendChild(proposalRow(f, p, locked)); });
+    return box;
+  }
+
+  function callBody(f) {
+    var box = el("div", "fold-body item-open");
+    var work = state.callWork[f.id];
+    var locked = !!work;
+    if (f.status === "ready") {
+      if (f.summary) {
+        var sum = sect("Summary");
+        sum.appendChild(el("p", "gist", f.summary));
+        box.appendChild(sum);
+      }
+      var open = openProposals(f);
+      var tasks = open.filter(function (p) { return p.kind === "task"; });
+      var updates = open.filter(function (p) { return p.kind === "update"; });
+      if (tasks.length) box.appendChild(proposalBox(f, "Tasks to add", tasks, locked));
+      if (updates.length) box.appendChild(proposalBox(f, "Project updates", updates, locked));
+      var doBox = sect("What you can do", "sect-do");
+      var acts = el("div", "actions call-foot");
+      var all = button(work === "all" ? "Adding..." : "Add all", "btn call-all", function () { addAllProposals(f.id); });
+      all.disabled = locked;
+      var rest = button(work === "rest" ? "Dismissing..." : "Dismiss the rest", "btn subtle call-rest", function () { dismissRest(f.id); });
+      rest.disabled = locked;
+      var again = button(work === "run" ? "Checking..." : "Check again", "btn subtle call-again", function () { runFollowup(f.id); });
+      again.disabled = locked;
+      acts.appendChild(all);
+      acts.appendChild(rest);
+      acts.appendChild(again);
+      doBox.appendChild(acts);
+      doBox.appendChild(el("p", "fine", "Check again reads the note and your meeting notes again, and keeps what you already added or dismissed."));
+      box.appendChild(doBox);
+    } else {
+      var st = sect(null, "call-status");
+      var failed = f.status === "failed";
+      st.appendChild(el("p", "gist call-says", failed ? "The follow-up for this call did not work." : "Waiting for the Granola note of this call."));
+      if (failed && f.error) st.appendChild(el("p", "reason call-reason", String(f.error)));
+      var go = el("div", "actions call-foot");
+      var label = failed ? "Try again" : "Check now";
+      var run = button(work === "run" ? "Checking..." : label, "btn call-run", function () { runFollowup(f.id); });
+      run.disabled = locked;
+      go.appendChild(run);
+      st.appendChild(go);
+      box.appendChild(st);
+    }
+    if (work === "run") {
+      var busy = el("p", "run-busy call-busy", "Reading the note and your meeting notes. This can take a minute or two.");
+      busy.setAttribute("role", "status");
+      box.appendChild(busy);
+    }
+    if (state.callNote[f.id] && !work) box.appendChild(el("p", "fine call-note", state.callNote[f.id]));
+    if (state.callErr[f.id]) {
+      var bad = el("p", "error call-error", state.callErr[f.id]);
+      bad.setAttribute("role", "alert");
+      box.appendChild(bad);
+    }
+    return box;
+  }
+
+  function callCard(f) {
+    var isOpen = callIsOpen(f);
+    var n = f.status === "ready" ? openProposals(f).length : 0;
+    var first = callFirst(f);
+    var r = makeRow("article", "card item-row full", f.space);
+    var node = r.node;
+    node.setAttribute("data-call", f.id);
+    node.setAttribute("data-status", f.status);
+    var title = button(first ? "Call with " + first : "Your call", "title row-title", function () {});
+    r.main.appendChild(title);
+    rowSub(r, [f.meeting_title ? String(f.meeting_title) : ""]);
+    if (f.status === "ready") r.state.appendChild(stateText(n + " to review", ""));
+    else if (f.status === "failed") r.state.appendChild(stateText("Did not work", "now"));
+    else r.state.appendChild(stateText("Waiting for the note", "quiet"));
+    if (f.meeting_on) r.date.appendChild(el("span", "when-ago", callDay(f.meeting_on)));
+    var href = httpsLink(f.note_url);
+    if (href) r.acts.appendChild(linkTo(href, "Granola note", "btn small"));
+    rowOpens(r, title, isOpen, function () {
+      state.callOpen[f.id] = !callIsOpen(f);
+      var fresh = callCard(f);
+      node.replaceWith(fresh);
+      fresh.querySelector(".row-title").focus({ preventScroll: true });
+    });
+    if (isOpen) node.appendChild(callBody(f));
+    return node;
+  }
+
+  function renderCalls() {
+    var box = $("cv-calls");
+    var list = state.followups.filter(function (f) { return callIsShown(f) && hit(callParts(f)); }).sort(function (a, b) {
+      var x = String(a.meeting_on || ""), y = String(b.meeting_on || "");
+      return x < y ? 1 : x > y ? -1 : (a.id < b.id ? 1 : -1);
+    });
+    box.hidden = !list.length;
+    if (!list.length) { box.textContent = ""; return 0; }
+    var blk = coverBlock("cv-calls", "After your calls", list.length, null, null);
+    var review = list.reduce(function (sum, f) { return sum + (f.status === "ready" ? openProposals(f).length : 0); }, 0);
+    if (review) blk.state.appendChild(stateText(review + " to review", ""));
+    list.forEach(function (f) { blk.body.appendChild(callCard(f)); });
+    return list.length;
+  }
+
   function renderToday() {
     var now = Date.now();
     renderNextUp(now);
+    var calls = renderCalls();
     renderCoverNew();
-    return renderCoverComing() + renderCoverWork() + renderCoverTasks() + renderCoverInbox() + renderCoverReview();
+    return calls + renderCoverComing() + renderCoverWork() + renderCoverTasks() + renderCoverInbox() + renderCoverReview();
   }
 
   // ---------- Start: steps (and a draft reply) for an item or a task ----------
@@ -7734,6 +8238,9 @@
           .or('status.in.(proposed,open),and(status.eq.done,done_at.gte."' + new Date(Date.now() - KD_DONE_DAYS * DAY).toISOString() + '")')
           .order("on_date", { ascending: true }).limit(1000),
         loadReactions(), // extra, and never rejects
+        sb.from("call_followups").select(CALL_COLS)
+          .or('meeting_on.gte.' + localDay(new Date(Date.now() - CALL_DAYS * DAY)) + ',created_at.gte."' + new Date(Date.now() - CALL_DAYS * DAY).toISOString() + '"')
+          .order("meeting_on", { ascending: false }).limit(100),
       ]);
       var failed = results.slice(0, 9).filter(function (r) { return r.error; })[0];
       if (failed) throw new Error(failed.error.message);
@@ -7760,6 +8267,9 @@
       else if (state.view === "today" || state.view === "projects") notice("The key dates could not be read: " + results[12].error.message);
       // The reactions are extra too: with none readable, only the ones confirmed in this page session show.
       state.reacted = mergeReactions(results[13] || {});
+      // The follow-ups after your calls are extra too.
+      if (!results[14].error) state.followups = mergeFollowups(results[14].data || []);
+      else if (state.view === "today") notice("The follow-ups after your calls could not be read: " + results[14].error.message);
       syncRunPoll();
       var items = results[0].data || [];
       var fetched = await loadSourceItems(state.tasks, items);
@@ -7890,6 +8400,7 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "quick_links" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "cover_reviews" }, reloadSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "call_followups" }, reloadSoon)
       .on("postgres_changes", { event: "*", schema: "public", table: "runs" }, loadRunsSoon)
       .subscribe(function (status) {
         if (status === "SUBSCRIBED") { setLive("Live", true); reloadSoon(); }

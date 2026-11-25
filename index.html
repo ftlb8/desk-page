@@ -7,12 +7,12 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <!-- Raise this number, here and on the five files below, with every change, so browsers fetch the new files. -->
-  <meta name="desk-version" content="44">
+  <meta name="desk-version" content="45">
   <!-- The page may only load its own files and talk to the Desk's Supabase project. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://sqkstllfyaqrkillnplq.supabase.co wss://sqkstllfyaqrkillnplq.supabase.co; base-uri 'none'; form-action 'none'">
   <title>Desk</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=44">
+  <link rel="stylesheet" href="style.css?v=45">
 </head>
 <body>
   <main id="signin" class="signin" hidden>
@@ -54,6 +54,7 @@
         <div id="cv-new" class="tsec cv-block cv-new" hidden></div>
         <div class="today-grid">
           <div id="cv-next" class="tsec cv-block"></div>
+          <div id="cv-calls" class="tsec cv-block" hidden></div>
           <div id="cv-tasks" class="tsec cv-block"></div>
           <div id="cv-inbox" class="tsec cv-block"></div>
           <div id="cv-coming" class="tsec cv-block" hidden></div>
@@ -291,9 +292,9 @@
     </dialog>
   </div>
 
-  <script src="vendor/supabase-2.119.0.js?v=44"></script>
-  <script src="config.js?v=44"></script>
-  <script src="format.js?v=44"></script>
-  <script src="app.js?v=44"></script>
+  <script src="vendor/supabase-2.119.0.js?v=45"></script>
+  <script src="config.js?v=45"></script>
+  <script src="format.js?v=45"></script>
+  <script src="app.js?v=45"></script>
 </body>
 </html>
