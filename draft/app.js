@@ -2262,7 +2262,16 @@
       if (!rows.length) inside.appendChild(el("p", "empty", "Nothing is logged for this yet."));
       var list = el("div", "change-log");
       rows.forEach(function (c) { list.appendChild(changeLine(c, "log", p)); });
-      inside.appendChild(list);
+      // DRAFT: the whole log is one fold, closed until you open it; the choice is remembered for every project.
+      if (rows.length) {
+        var fold = el("details", "log-fold");
+        var newest = rows[0] && rows[0].changed_on ? ", newest " + shortDate(new Date(rows[0].changed_on + "T12:00:00")) : "";
+        fold.appendChild(el("summary", null, rows.length + (rows.length === 1 ? " line" : " lines") + newest));
+        fold.open = needles.length ? true : barOpen("log", false);
+        fold.addEventListener("toggle", function () { if (!needles.length) setBar("log", fold.open); });
+        fold.appendChild(list);
+        inside.appendChild(fold);
+      }
     }
     if (state.addLine && sameId(state.addLine.pageId, p.id)) {
       inside.appendChild(addLineForm(p));

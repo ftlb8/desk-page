@@ -1195,6 +1195,9 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 }
 .fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
 .fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
+/* ---------- DRAFT: the change log of a project folds ---------- */
+.log-fold > summary { min-height: 36px; font-size: var(--fs-body); color: var(--muted); cursor: pointer; }
+.log-fold[open] > summary { margin-bottom: 8px; }
 /* ---------- DRAFT: Quick capture ---------- */
 #cv-note .note-row .primary { margin-left: 0; }
 #cv-note .note-row #cvnote-task { margin-left: auto; }
@@ -1209,4 +1212,4 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   #cv-note .note-row select { flex: 1 1 80px; }
   #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
 }
-.updated::after { content: " · Draft 5"; }
+.updated::after { content: " · Draft 6"; }
