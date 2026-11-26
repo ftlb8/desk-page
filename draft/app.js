@@ -1030,9 +1030,8 @@
     if (!entries.length) body.appendChild(el("p", "empty", "Nothing here"));
     // DRAFT: one control that closes every FYI item of the section, after a second click.
     var fyi = entries.filter(function (e) { return e.kind === "look"; }).map(function (e) { return e.item; });
-    if (fyi.length > 1 && !needles.length) {
+    if (id === "fyi" && fyi.length > 1 && !needles.length) {
       var tools = el("div", "fyi-tools");
-      tools.appendChild(el("span", "fine", fyi.length + " FYI"));
       var armed = false;
       var all = button("Mark all FYI as done", "btn small", function () {
         if (!armed) {
@@ -1050,7 +1049,7 @@
     }
     entries.forEach(function (e) { body.appendChild(card(e.item, e.kind, "inbox")); });
     box.appendChild(body);
-    box.open = needles.length ? true : state.openInbox[id] !== false; // all start open
+    box.open = needles.length ? true : id === "fyi" ? state.openInbox[id] === true : state.openInbox[id] !== false; // all start open, except FYI
     head.addEventListener("click", function () { state.openInbox[id] = !box.open; });
     return box;
   }
@@ -1080,18 +1079,20 @@
       if ((a.kind === "waiting") !== (b.kind === "waiting")) return a.kind === "waiting" ? -1 : 1;
       return newest(a.item, b.item);
     });
-    var parts = { key: [], others: [], channels: [], email: [] };
+    // DRAFT: everything that is only FYI (channels, email, Drive) sits in one section of its own, closed until you open it.
+    // What a key person wrote stays in the first section, FYI or not.
+    var parts = { key: [], others: [], email: [], fyi: [] };
     all.forEach(function (e) {
-      if (isEmail(e.item)) parts.email.push(e);
-      else if (fromKeyPerson(e.item)) parts.key.push(e);
-      else if (e.kind === "waiting") parts.others.push(e);
-      else parts.channels.push(e);
+      if (!isEmail(e.item) && fromKeyPerson(e.item)) parts.key.push(e);
+      else if (e.kind !== "waiting") parts.fyi.push(e);
+      else if (isEmail(e.item)) parts.email.push(e);
+      else parts.others.push(e);
     });
     var defs = [
       { id: "key", name: keyTitle(), col: 0 },
       { id: "others", name: "Other DMs and mentions", col: 0 },
-      { id: "channels", name: "Key channels", col: 1 },
       { id: "email", name: "Email and Google Drive", col: 1 },
+      { id: "fyi", name: "FYI", col: 1 },
     ];
     var grid = $("list-inbox");
     grid.textContent = "";
@@ -8515,6 +8516,23 @@
     add.disabled = false;
     add.textContent = "Add";
     $("task-title").value = "";
+  });
+
+  // DRAFT: Quick capture on Today. "Add as task" takes the same text through the one-line add of the Tasks view.
+  $("cvnote-task").addEventListener("click", async function () {
+    var box = $("cvnote-body");
+    var text = box.value.trim().slice(0, 500);
+    if (!text) { box.focus(); return; }
+    var add = $("cvnote-task");
+    add.disabled = true;
+    add.textContent = "Working it out…";
+    var picked = $("cvnote-space").value;
+    var space = state.filter !== "all" ? state.filter : (picked || readPref("desk.task-space", "metaculus"));
+    var s = await suggest({ text: text, space: state.filter !== "all" ? state.filter : (picked || null) });
+    showDialog(withSuggestion(blankTask(space, text), s), s ? "Suggested from what you typed. Change anything, then save." : "Could not get a suggestion. Fill in what you need, then save.");
+    add.disabled = false;
+    add.textContent = "Add as task";
+    box.value = "";
   });
 
   $("plan-add").addEventListener("click", function () { openPlanDialog(null, null); });

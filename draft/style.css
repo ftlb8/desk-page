@@ -1195,4 +1195,18 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 }
 .fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
 .fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
-.updated::after { content: " · Draft 2: compact Today and Inbox"; }
+/* ---------- DRAFT: Quick capture ---------- */
+#cv-note .note-row .primary { margin-left: 0; }
+#cv-note .note-row #cvnote-task { margin-left: auto; }
+/* On a phone it is the first thing on Today, without its heading and one line tall until you type. */
+@media (max-width: 520px) {
+  .today-grid > #cv-note { order: -4; }
+  #cv-note > .tsec-head { display: none; }
+  #cv-note .note-form.cv-pad { padding: 10px; }
+  #cv-note .note-form textarea { min-height: 44px; height: 44px; }
+  #cv-note .note-form textarea:focus, #cv-note .note-form textarea:not(:placeholder-shown) { height: 88px; }
+  #cv-note .note-row { flex-wrap: nowrap; }
+  #cv-note .note-row select { flex: 1 1 80px; }
+  #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
+}
+.updated::after { content: " · Draft 5"; }
