@@ -1204,6 +1204,14 @@ p.spot, li.spot, .cv-plain.spot, .change-text.spot { padding: 2px 4px; margin-le
 /* The move menu of an opened task is as wide as its words, so the buttons beside it stay on its line. */
 .fold-body .actions .task-when { flex: 0 1 auto; width: auto; max-width: 100%; }
 .fold-body .actions .task-urgent { white-space: nowrap; }
+/* An opened card: buttons a little narrower and closer, so the row of actions needs one line less. */
+.fold-body .actions { gap: 6px; }
+.fold-body .actions .btn { padding-left: 10px; padding-right: 10px; }
+.fold-body .actions .react-group { margin: 0 !important; padding: 0 6px !important; }
+/* On a phone a closed task in the Tasks list keeps Plan on the line of its pill and date. */
+@media (max-width: 520px) {
+  #list-tasks .trow.full:not(.is-open) .row-acts { flex: 0 1 auto; margin-top: 0; }
+}
 /* Tell the Desk: the box and its button share one line at every width. */
 .ins-line { display: flex; align-items: stretch; gap: 8px; flex-wrap: nowrap; }
 .ins-line > input { flex: 1 1 auto; min-width: 0; width: auto; }
@@ -1240,4 +1248,4 @@ p.spot, li.spot, .cv-plain.spot, .change-text.spot { padding: 2px 4px; margin-le
   #cv-note .note-row select { flex: 1 1 80px; }
   #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
 }
-.updated::after { content: " · Draft 7"; }
+.updated::after { content: " · Draft 8"; }

@@ -1405,7 +1405,9 @@
     node.classList.add("spot");
     if (spot.scrolls > 0) {
       spot.scrolls--;
-      node.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+      // A tall card is shown from its top; a short one in the middle of the screen.
+      var tall = node.getBoundingClientRect().height > window.innerHeight * 0.6;
+      node.scrollIntoView({ block: tall ? "start" : "center", behavior: calm ? "auto" : "smooth" });
     }
   }
   function markSpot(find) {
