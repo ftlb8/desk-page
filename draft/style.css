@@ -1179,4 +1179,13 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   #cv-tasks .trow.full:not(.is-open) .row-acts,
   #cv-inbox .item-row.full:not(.is-open) .row-acts { flex: 0 1 auto; margin-top: 0; }
 }
-.updated::after { content: " · Draft: compact Today"; }
+/* Next up runs across the whole width on a wide screen, so it is never stretched to the height of the task list. */
+@media (min-width: 1000px) { .today-grid > #cv-next { grid-column: 1 / -1; } }
+/* ---------- DRAFT: Inbox ---------- */
+/* A closed FYI card in the Inbox is two lines: the title on one line and one quiet line. Cards that need you are unchanged. */
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-sub > * { white-space: nowrap; }
+.fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
+.fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
+.updated::after { content: " · Draft 2: compact Today and Inbox"; }
