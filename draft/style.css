@@ -1187,9 +1187,12 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 #list-inbox .item-row.full.is-quiet:not(.is-open) .row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #list-inbox .item-row.full.is-quiet:not(.is-open) .row-sub > * { white-space: nowrap; }
 /* Its actions sit on the line of the pill and the time, not on a line of their own. */
-#list-inbox .item-row.full.is-quiet:not(.is-open) .row-acts { flex: 0 1 auto; margin-top: 0; flex-wrap: nowrap; }
-#list-inbox .item-row.full.is-quiet:not(.is-open) .row-meta { flex-wrap: nowrap; }
-#list-inbox .item-row.full.is-quiet:not(.is-open) .row-meta > :not(:empty) { margin-top: 0 !important; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-acts { flex: 0 0 auto; margin-top: 0; flex-wrap: nowrap; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-state { flex: none; flex-wrap: nowrap; }
+/* On a phone a closed FYI card keeps Done only; Reply and Later are there once it is opened. */
+@media (max-width: 520px) {
+  #list-inbox .item-row.full.is-quiet:not(.is-open) .row-acts > :not(:nth-last-child(2)) { display: none; }
+}
 .fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
 .fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
 .updated::after { content: " · Draft 2: compact Today and Inbox"; }
