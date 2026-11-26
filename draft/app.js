@@ -1294,6 +1294,7 @@
     restoreDraftFocus(typing);
     restoreKeyFocus(keyFocus);
     restoreKeepFocus(keepFocus);
+    applySpot(); // DRAFT: the highlight survives a redraw
   }
 
   // ---------- Meetings ----------
@@ -1383,9 +1384,62 @@
         if (p.getAttribute("data-inbox")) state.openInbox[p.getAttribute("data-inbox")] = true;
       }
     }
-    card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    card.classList.add("flash");
-    setTimeout(function () { card.classList.remove("flash"); }, 2200);
+    markSpot(function () { return onPage('[data-item="' + item.id + '"]'); });
+  }
+
+  // DRAFT: the spot. The thing a link sent you to keeps a tint and an outline for a few seconds, and gets them back
+  // when the page is drawn again in that time (new data arriving used to wipe the old flash).
+  var spot = null; // { find: function that returns the node, until: time in ms, scrolls: how many times it may still scroll }
+  var SPOT_MS = 7000;
+  function applySpot() {
+    var old = document.querySelectorAll(".spot");
+    for (var i = 0; i < old.length; i++) old[i].classList.remove("spot");
+    if (!spot) return;
+    if (Date.now() > spot.until) { spot = null; return; }
+    var node = null;
+    try { node = spot.find(); } catch (_) { node = null; }
+    if (!node) return;
+    for (var p = node.parentElement; p; p = p.parentElement) {
+      if (p.tagName === "DETAILS" && !p.open) p.open = true;
+    }
+    node.classList.add("spot");
+    if (spot.scrolls > 0) {
+      spot.scrolls--;
+      node.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    }
+  }
+  function markSpot(find) {
+    spot = { find: find, until: Date.now() + SPOT_MS, scrolls: 2 };
+    applySpot();
+    setTimeout(function () { if (spot && Date.now() >= spot.until) { spot = null; applySpot(); } }, SPOT_MS + 100);
+  }
+  // The words of a sentence that carry meaning, lower-cased.
+  function spotWords(text) {
+    var seen = {};
+    return String(text || "").toLowerCase().split(/[^a-z0-9à-ÿ$]+/).filter(function (w) {
+      if (w.length < 4 || seen[w]) return false;
+      seen[w] = true;
+      return true;
+    });
+  }
+  // Inside `page`, the visible line that says the most of what `text` says; null when nothing comes close.
+  function spotMatch(page, text) {
+    var want = spotWords(text);
+    if (!page || want.length < 3) return null;
+    var best = null;
+    var bestScore = 0;
+    var lines = page.querySelectorAll("p, li, .row-title, .cv-plain, .change-text");
+    for (var i = 0; i < lines.length; i++) {
+      var n = lines[i];
+      if (!n.offsetParent || n.querySelector("p, li")) continue;
+      var have = n.textContent.toLowerCase();
+      if (have.length < 12) continue;
+      var hits = 0;
+      for (var k = 0; k < want.length; k++) if (have.indexOf(want[k]) >= 0) hits++;
+      var score = hits / want.length;
+      if (hits >= 3 && score > bestScore) { best = n; bestScore = score; }
+    }
+    return bestScore >= 0.45 ? best : null;
   }
 
   // Scrolls to a card or row that was just drawn and lights it up for a moment.
@@ -1397,13 +1451,15 @@
         if (p.id) state.folds[p.id] = true;
       }
     }
-    node.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    node.classList.add("flash");
-    setTimeout(function () { node.classList.remove("flash"); }, 2200);
+    var sel = null;
+    ["data-project", "data-meeting", "data-item", "data-task", "data-run", "data-key"].forEach(function (a) {
+      if (!sel && node.getAttribute(a)) sel = "[" + a + '="' + node.getAttribute(a) + '"]';
+    });
+    markSpot(function () { return sel ? onPage(sel) : (node.isConnected ? node : null); });
   }
 
   // Opens the Projects tab with this project's page open (a topic opens the project it belongs to).
-  function goToProject(project) {
+  function goToProject(project, text) {
     var plan = parentOf(project) || project;
     clearSearch();
     if (state.filter !== "all" && state.filter !== plan.space) {
@@ -1412,7 +1468,12 @@
     }
     state.openProject = plan.id;
     showView("projects");
-    reveal(onPage('[data-project="' + plan.id + '"]'));
+    // The line of the project page that says what the link said; the project's own row when no line does.
+    markSpot(function () {
+      var page = onPage('[data-project="' + plan.id + '"]');
+      if (!page) return null;
+      return (text ? spotMatch(page, text) : null) || page.querySelector(".row-head") || page;
+    });
   }
 
   // Opens Meetings with this meeting's card in view.
@@ -1570,7 +1631,7 @@
 
   // A line of a prep list: a button to the thing when it is known, plain text when it is not.
   function prepText(x) {
-    var go = x.ref ? pointTarget(x.ref) : null;
+    var go = x.ref ? pointTarget(x.ref, x.text) : null;
     return go ? button(String(x.text), "ref cv-ref", go) : el("span", "cv-plain", String(x.text));
   }
 
@@ -3496,9 +3557,7 @@
     render();
     var row = onPage('[data-task="' + task.id + '"]');
     if (!row) return;
-    row.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    row.classList.add("flash");
-    setTimeout(function () { row.classList.remove("flash"); }, 2200);
+    markSpot(function () { return onPage('[data-task="' + task.id + '"]'); });
   }
 
   // Tasks with a date first, by date; then the rest, newest first.
@@ -5573,7 +5632,7 @@
   }
 
   // Where a point of the review leads; null when the thing is no longer open or not loaded.
-  function pointTarget(ref) {
+  function pointTarget(ref, text) {
     if (!ref || !ref.kind || ref.id === undefined || ref.id === null) return null;
     var same = function (x) { return String(x.id) === String(ref.id); };
     if (ref.kind === "item") {
@@ -5587,14 +5646,14 @@
     }
     if (ref.kind === "plan" || ref.kind === "project") {
       var plan = state.projects.filter(same)[0];
-      return plan ? function () { goToProject(plan); } : null;
+      return plan ? function () { goToProject(plan, text); } : null;
     }
     if (ref.kind === "key_date") {
       // The project that owns the key date; Projects itself when it belongs to none.
       var key = keyById(ref.id);
       if (!key) return null;
       var owner = projectById(key.project_id);
-      return owner ? function () { goToProject(owner); } : function () { clearSearch(); showView("projects"); };
+      return owner ? function () { goToProject(owner, text); } : function () { clearSearch(); showView("projects"); };
     }
     if (ref.kind === "meeting") {
       var meeting = state.meetings.filter(same)[0];
@@ -5643,7 +5702,7 @@
           points.forEach(function (p) {
             var li = el("li", "cv-point");
             li.appendChild(el("span", "pill cv-kind cv-kind-" + (KIND_TAGS[p.kind] ? p.kind : "heads_up"), KIND_TAGS[p.kind] || "Heads-up"));
-            var go = pointTarget(p.ref);
+            var go = pointTarget(p.ref, p.text);
             if (go) li.appendChild(button(String(p.text), "ref cv-ref", go));
             else li.appendChild(el("span", "cv-plain", String(p.text)));
             ul.appendChild(li);
@@ -7947,9 +8006,7 @@
     var card = onPage('[data-run="' + run.id + '"]');
     window.scrollTo(0, 0);
     if (!card) return;
-    card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    card.classList.add("flash");
-    setTimeout(function () { card.classList.remove("flash"); }, 2200);
+    markSpot(function () { return onPage('[data-run="' + run.id + '"]'); });
   }
 
   // ----- Work -----
