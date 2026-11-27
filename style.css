@@ -1295,3 +1295,14 @@ p.spot, li.spot, .cv-plain.spot, .change-text.spot { padding: 2px 4px; margin-le
   #cv-note .note-row select { flex: 1 1 80px; }
   #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
 }
+
+/* ---------- v48: the foot of the page, and Quick capture on a phone ---------- */
+/* Sign out sits at the bottom right, after the version, on every screen. */
+.foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 16px; max-width: 1240px; margin: 0 auto; padding: 8px 20px 40px; }
+.foot > .updated { max-width: none; margin: 0; padding: 0; }
+@media (max-width: 520px) {
+  .foot { padding: 8px 14px 40px; }
+  /* Quick capture: the organisation takes the room that is left; the two buttons are as wide as their words. */
+  #cv-note .note-row select { flex: 1 1 0; min-width: 0; }
+  #cv-note .note-row .primary, #cv-note .note-row .btn { flex: none; margin-left: 0; }
+}

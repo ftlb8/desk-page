@@ -45,6 +45,11 @@ The backend (collector, database rules, agents) is in the private repository `ft
 
 - **Icon and install:** the page has an icon (three rows with the organisations' colours) and a web app manifest (`manifest.webmanifest`, icons in `icons/`), so it can be installed on a phone's home screen and opens without the browser's bars. The content security policy allows the page's own manifest. `icons/make-icons.py` draws the icon files again (plain Python, no libraries).
 
+## Version 48
+
+- Sign out moved from the top bar to the foot of the page, at the right, after the version.
+- Quick capture on a phone: the organisation list takes the free width; "Add as task" and "Save note" are as wide as their words.
+
 ## Releasing a change
 
 Raise the number in `index.html` (the `desk-version` tag and the `?v=` on each file) with every change. Browsers keep the old files for up to ten minutes otherwise. The page shows its version at the bottom.
