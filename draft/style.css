@@ -1195,6 +1195,17 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 }
 .fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
 .fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
+/* ---------- DRAFT: collapsed cards in the Tasks and Inbox lists ---------- */
+/* Like on Today: at most two lines of title and one quiet line cut with an ellipsis. Expanding the card shows everything. */
+#list-tasks .trow.full:not(.is-open) .row-title,
+#list-inbox .item-row.full:not(.is-open):not(.is-quiet) .row-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+#list-tasks .trow.full:not(.is-open) .row-sub,
+#list-inbox .item-row.full:not(.is-open) .row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-tasks .trow.full:not(.is-open) .row-sub > *,
+#list-inbox .item-row.full:not(.is-open) .row-sub > * { white-space: nowrap; }
+
 /* ---------- DRAFT: the spot (what a link sent you to) ---------- */
 .spot { background-color: color-mix(in srgb, var(--accent) 16%, transparent) !important; box-shadow: 0 0 0 2px var(--accent); border-radius: 6px; scroll-margin: 96px 0; }
 .row.spot, .card.spot { border-radius: var(--radius); }
@@ -1248,4 +1259,4 @@ p.spot, li.spot, .cv-plain.spot, .change-text.spot { padding: 2px 4px; margin-le
   #cv-note .note-row select { flex: 1 1 80px; }
   #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
 }
-.updated::after { content: " · Draft 8"; }
+.updated::after { content: " · Draft 9"; }
