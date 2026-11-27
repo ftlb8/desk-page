@@ -29,6 +29,18 @@ The backend (collector, database rules, agents) is in the private repository `ft
 - **Attention first:** groups go Needs you, Active, Quiet (Quiet folded when it holds more than 5 rows); bars and folds remember whether you opened them.
 - At most two pills per row; spacing 4/8/12/16/24; hairline borders; no shadows or gradients; empty states are one quiet sentence; contrast AA in both themes; controls at least 40 px tall on a phone.
 
+## Version 46
+
+- **Today** opens with Quick capture on a phone (a note, or a task through the one-line add), then the next meeting across the full width, then tasks and inbox. "How things stand" is a fold (closed on a phone until opened, remembered).
+- **Collapsed cards** on Today, in Tasks and in the Inbox show at most two lines of title and one quiet line; opening a card shows everything. FYI cards show one line of title.
+- **Inbox sections:** key people, other DMs and mentions, email that needs you, and one FYI section (closed until opened) with "Mark all FYI as done" (a second click confirms; one Undo for all).
+- **Search** is an icon at the end of the tab row; it opens while you type in it or while it holds words.
+- **New since your last visit:** the same dot as on an organisation sits on new cards (inbox items, suggested tasks, tasks), after the name of a section that holds one, and on the Inbox and Tasks tabs.
+- **Tasks:** the projects are one list to pick from, next to List and By day.
+- **Projects:** a project's change log is a fold, closed until opened.
+- **The spot:** a link to a task, item, meeting, run or project leaves a tint and outline on its target for 7 seconds, kept across redraws; for a project it marks the line that says what the link said.
+- **Phone:** the top bar is one line (the organisation filter scrolls sideways, the connection is a dot).
+
 ## Releasing a change
 
 Raise the number in `index.html` (the `desk-version` tag and the `?v=` on each file) with every change. Browsers keep the old files for up to ten minutes otherwise. The page shows its version at the bottom.

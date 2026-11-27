@@ -1146,3 +1146,152 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
   #cv-calls .call-acts .btn, #cv-calls .call-foot .btn, #cv-calls .row-acts .btn { min-height: 44px; }
 }
 #cv-calls .call-busy { font-weight: 400; color: var(--muted); }
+
+/* ---------- v46: compact Today ---------- */
+/* The next meeting is always the first card on Today, before anything else that needs you. */
+.today-grid > #cv-next { order: -3; }
+.today-grid > #cv-calls { order: -2; }
+/* A closed task or inbox card on Today is two lines: the title (at most two lines) and one quiet line cut with an ellipsis.
+   Opening the card shows everything, as before. The Inbox and Tasks views are unchanged. */
+#cv-tasks .trow.full:not(.is-open) .row-title,
+#cv-inbox .item-row.full:not(.is-open) .row-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+#cv-tasks .trow.full:not(.is-open) .row-sub,
+#cv-inbox .item-row.full:not(.is-open) .row-sub {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#cv-tasks .trow.full:not(.is-open) .row-sub > *,
+#cv-inbox .item-row.full:not(.is-open) .row-sub > * { white-space: nowrap; }
+#cv-tasks .tsec-body.rows, #cv-inbox .tsec-body.rows { row-gap: 6px; }
+#cv-tasks, #cv-inbox { margin-bottom: 0; }
+/* On a phone the top bar is one line: the organisation filter scrolls sideways, the connection is a dot. */
+@media (max-width: 520px) {
+  .topbar { flex-wrap: nowrap; gap: 8px; }
+  .topbar > h1 { display: none; }
+  .filters { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .filters::-webkit-scrollbar { display: none; }
+  .filter { flex: none; }
+  .bar-right { width: auto; flex: none; gap: 8px; }
+  .live { font-size: 0; }
+  .live::before { margin-right: 0; }
+  /* The actions of a closed card sit on the pills line instead of a line of their own. */
+  #cv-tasks .trow.full:not(.is-open) .row-acts,
+  #cv-inbox .item-row.full:not(.is-open) .row-acts { flex: 0 1 auto; margin-top: 0; }
+}
+/* Next up runs across the whole width on a wide screen, so it is never stretched to the height of the task list. */
+@media (min-width: 1000px) { .today-grid > #cv-next { grid-column: 1 / -1; } }
+/* ---------- v46: Inbox ---------- */
+/* A closed FYI card in the Inbox is two lines: the title on one line and one quiet line. Cards that need you are unchanged. */
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-sub > * { white-space: nowrap; }
+/* Its actions sit on the line of the pill and the time, not on a line of their own. */
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-acts { flex: 0 0 auto; margin-top: 0; flex-wrap: nowrap; }
+#list-inbox .item-row.full.is-quiet:not(.is-open) .row-state { flex: none; flex-wrap: nowrap; }
+/* On a phone a closed FYI card keeps Done only; Reply and Later are there once it is opened. */
+@media (max-width: 520px) {
+  #list-inbox .item-row.full.is-quiet:not(.is-open) .row-acts > :not(:nth-last-child(2)) { display: none; }
+}
+.fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
+.fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
+/* ---------- v46: search is an icon at the end of the tab row ---------- */
+.viewbar { display: flex; align-items: center; gap: 8px; max-width: 1240px; margin: 0 auto; padding: 8px 20px 0; border-bottom: 1px solid var(--line); }
+.viewbar > .views { flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; padding: 0; border-bottom: 0; overflow-x: auto; scrollbar-width: none; }
+.viewbar > .views::-webkit-scrollbar { display: none; }
+.viewbar > .searchbar { flex: none; max-width: none; margin: 0 0 4px; padding: 0; gap: 8px; }
+/* Closed: a round button with a magnifying glass. It opens while you type in it or while it holds words. */
+.viewbar #search {
+  flex: none; width: 36px; min-height: 36px; padding: 0 0 0 34px; border-radius: 999px; cursor: pointer; color: transparent;
+  background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%238a8a8a' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5L14 14'/%3E%3C/svg%3E") no-repeat 9px center;
+  transition: width 0.15s ease;
+}
+.viewbar #search::placeholder { color: transparent; }
+.viewbar #search:focus, .viewbar #search:not(:placeholder-shown) { width: min(260px, 56vw); padding-right: 12px; cursor: text; color: inherit; }
+.viewbar #search:focus::placeholder { color: var(--muted); }
+.viewbar .search-count:empty { display: none; }
+@media (max-width: 520px) {
+  .viewbar { padding: 6px 14px 0; }
+  .viewbar #search:focus, .viewbar #search:not(:placeholder-shown) { width: min(200px, 52vw); }
+  .viewbar .search-count { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .viewbar #search { transition: none; } }
+
+/* ---------- v46: the dot on what is new since your last visit ---------- */
+/* The same dot as on an organisation: after a section's name, on the Inbox and Tasks tabs, and before the title of a card. */
+.new-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); margin-left: 6px; vertical-align: 0.1em; }
+.view { position: relative; }
+.view > .new-dot { position: absolute; top: 4px; right: 0; margin: 0; }
+.row.is-new > .row-head::after { content: ""; position: absolute; top: -5px; right: -5px; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); border: 2px solid var(--bg); pointer-events: none; }
+/* In a list without gaps (the tray) the dot sits inside the corner so it is not cut off. */
+#list-suggested .row.is-new > .row-head::after, #list-later-sug .row.is-new > .row-head::after { top: 4px; right: 4px; border-color: var(--surface); }
+
+/* ---------- v46: Tasks: the projects are a list to pick from ---------- */
+.project-pick { flex: 0 1 260px; min-width: 0; max-width: 100%; padding: 4px 10px; min-height: 36px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: var(--fs-quiet); }
+.project-pick.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+@media (max-width: 600px) { .task-tools > .project-pick { flex: 1 1 auto; font-size: 16px; min-height: 40px; } }
+
+/* ---------- v46: collapsed cards in the Tasks and Inbox lists ---------- */
+/* Like on Today: at most two lines of title and one quiet line cut with an ellipsis. Expanding the card shows everything. */
+#list-tasks .trow.full:not(.is-open) .row-title,
+#list-inbox .item-row.full:not(.is-open):not(.is-quiet) .row-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+#list-tasks .trow.full:not(.is-open) .row-sub,
+#list-inbox .item-row.full:not(.is-open) .row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#list-tasks .trow.full:not(.is-open) .row-sub > *,
+#list-inbox .item-row.full:not(.is-open) .row-sub > * { white-space: nowrap; }
+
+/* ---------- v46: the spot (what a link sent you to) ---------- */
+.spot { background-color: color-mix(in srgb, var(--accent) 16%, transparent) !important; box-shadow: 0 0 0 2px var(--accent); border-radius: 6px; scroll-margin: 96px 0; }
+.row.spot, .card.spot { border-radius: var(--radius); }
+p.spot, li.spot, .cv-plain.spot, .change-text.spot { padding: 2px 4px; margin-left: -4px; margin-right: -4px; }
+
+/* ---------- v46: alignment and wrapping ---------- */
+/* The move menu of an opened task is as wide as its words, so the buttons beside it stay on its line. */
+.fold-body .actions .task-when { flex: 0 1 auto; width: auto; max-width: 100%; }
+.fold-body .actions .task-urgent { white-space: nowrap; }
+/* An opened card: buttons a little narrower and closer, so the row of actions needs one line less. */
+.fold-body .actions { gap: 6px; }
+.fold-body .actions .btn { padding-left: 10px; padding-right: 10px; }
+.fold-body .actions .react-group { margin: 0 !important; padding: 0 6px !important; }
+/* On a phone a closed task in the Tasks list keeps Plan on the line of its pill and date. */
+@media (max-width: 520px) {
+  #list-tasks .trow.full:not(.is-open) .row-acts { flex: 0 1 auto; margin-top: 0; }
+}
+/* Tell the Desk: the box and its button share one line at every width. */
+.ins-line { display: flex; align-items: stretch; gap: 8px; flex-wrap: nowrap; }
+.ins-line > input { flex: 1 1 auto; min-width: 0; width: auto; }
+.ins-line > .btn { flex: none; }
+/* Links: the heading and its button sit on one centre line. */
+.links-head { align-items: center; margin-bottom: 12px; }
+.links-head h2 { margin: 0; }
+/* Suggested tasks: the date and the two buttons share a line. */
+#list-suggested .row-acts, #list-later-sug .row-acts { flex: 0 1 auto; margin-top: 0; margin-left: auto; flex-wrap: nowrap; }
+/* On a phone the project filters of Tasks are one line that scrolls sideways, not nine lines. */
+@media (max-width: 600px) {
+  .task-tools { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-right: -14px; padding-right: 14px; }
+  .task-tools::-webkit-scrollbar { display: none; }
+  .task-tools > * { flex: none; white-space: nowrap; }
+  /* An opened card: buttons a little narrower so one more fits on a line. */
+  .fold-body .actions { gap: 6px; }
+  .fold-body .actions .btn { padding-left: 10px; padding-right: 10px; }
+}
+
+/* ---------- v46: the change log of a project folds ---------- */
+.log-fold > summary { display: flex; align-items: center; gap: 4px; list-style: none; min-height: 36px; font-size: var(--fs-body); color: var(--muted); cursor: pointer; }
+.log-fold[open] > summary { margin-bottom: 8px; }
+/* ---------- v46: Quick capture ---------- */
+#cv-note .note-row .primary { margin-left: 0; }
+#cv-note .note-row #cvnote-task { margin-left: auto; }
+/* On a phone it is the first thing on Today, without its heading and one line tall until you type. */
+@media (max-width: 520px) {
+  .today-grid > #cv-note { order: -4; }
+  #cv-note > .tsec-head { display: none; }
+  #cv-note .note-form.cv-pad { padding: 10px; }
+  #cv-note .note-form textarea { min-height: 44px; height: 44px; }
+  #cv-note .note-form textarea:focus, #cv-note .note-form textarea:not(:placeholder-shown) { height: 88px; }
+  #cv-note .note-row { flex-wrap: nowrap; }
+  #cv-note .note-row select { flex: 1 1 80px; }
+  #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
+}

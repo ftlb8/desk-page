@@ -782,6 +782,7 @@
     var r = makeRow("article", "card item-row full urgency-" + item.urgency + (fyi ? " is-quiet" : "") + (kind === "closed" || kind === "later" ? " is-quiet" : ""), item.space);
     var node = r.node;
     node.setAttribute("data-item", item.id);
+    if (kind !== "closed" && kind !== "later" && isFreshItem(item)) node.classList.add("is-new");
     var title = button(item.title, "title row-title", function () {});
     r.main.appendChild(title);
 
@@ -800,7 +801,7 @@
     } else {
       meta = (promise ? "Promised to " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item);
     }
-    if (isNewItem(item) && (kind === "waiting" || kind === "commit")) sub.unshift(newMark());
+    // v46: the dot before the title says it now; the quiet "New" word is left out.
     if (kind === "commit" && item.theme) sub.push(el("span", "theme-text", item.theme));
     sub.push(el("span", "meta", meta));
     // The gist, so the row gives its context without a click (opening the row shows it in full)
@@ -990,6 +991,10 @@
     var list = $("list-suggested");
     list.textContent = "";
     $("n-suggested").textContent = items.length ? String(items.length) : "";
+    var sum = $("box-suggested").querySelector("summary");
+    var had = sum.querySelector(".new-dot");
+    if (had) had.remove();
+    if (items.some(isFreshItem)) sum.appendChild(newDot());
     items.forEach(function (item) { list.appendChild(card(item, "commit", "sug")); });
   }
 
@@ -1024,15 +1029,51 @@
     box.setAttribute("data-inbox", id);
     var head = el("summary", "tsec-head");
     head.appendChild(el("span", "tsec-name", name));
+    if (entries.some(function (e) { return isFreshItem(e.item); })) head.appendChild(newDot());
     head.appendChild(el("span", "count", String(entries.length)));
     box.appendChild(head);
     var body = el("div", "tsec-body rows");
     if (!entries.length) body.appendChild(el("p", "empty", "Nothing here"));
+    // v46: one control that closes every FYI item of the section, after a second click.
+    var fyi = entries.filter(function (e) { return e.kind === "look"; }).map(function (e) { return e.item; });
+    if (id === "fyi" && fyi.length > 1 && !needles.length) {
+      var tools = el("div", "fyi-tools");
+      var armed = false;
+      var all = button("Mark all FYI as done", "btn small", function () {
+        if (!armed) {
+          armed = true;
+          all.textContent = "Yes, mark " + fyi.length + " as done";
+          all.classList.add("armed");
+          setTimeout(function () { armed = false; all.textContent = "Mark all FYI as done"; all.classList.remove("armed"); }, 5000);
+          return;
+        }
+        all.disabled = true;
+        doneAllFyi(fyi);
+      });
+      tools.appendChild(all);
+      body.appendChild(tools);
+    }
     entries.forEach(function (e) { body.appendChild(card(e.item, e.kind, "inbox")); });
     box.appendChild(body);
-    box.open = needles.length ? true : state.openInbox[id] !== false; // all start open
+    box.open = needles.length ? true : id === "fyi" ? state.openInbox[id] === true : state.openInbox[id] !== false; // all start open, except FYI
     head.addEventListener("click", function () { state.openInbox[id] = !box.open; });
     return box;
+  }
+
+  // v46: closes a list of FYI items in one go, with one Undo for all of them.
+  async function doneAllFyi(items) {
+    var saves = items.map(function (i) { return sb.rpc("set_item_state", { p_item: i.id, p_action: "done", p_until: null }); });
+    var at = new Date().toISOString();
+    items.forEach(function (i) { i.status = "done"; i.closed_by = "user"; i.closed_at = at; i.snooze_until = null; });
+    render();
+    var results = await Promise.all(saves);
+    var failed = results.filter(function (r) { return r && r.error; }).length;
+    if (failed) notice(failed + " of " + items.length + " did not save. They will show again.");
+    else toast(items.length + " marked done.", async function () {
+      await Promise.all(items.map(function (i) { return sb.rpc("set_item_state", { p_item: i.id, p_action: "reopen", p_until: null }); }));
+      await load();
+    });
+    await load();
   }
 
   // Waiting and worth-a-look items go into four sections, newest first. Returns how many cards are shown.
@@ -1044,18 +1085,20 @@
       if ((a.kind === "waiting") !== (b.kind === "waiting")) return a.kind === "waiting" ? -1 : 1;
       return newest(a.item, b.item);
     });
-    var parts = { key: [], others: [], channels: [], email: [] };
+    // v46: everything that is only FYI (channels, email, Drive) sits in one section of its own, closed until you open it.
+    // What a key person wrote stays in the first section, FYI or not.
+    var parts = { key: [], others: [], email: [], fyi: [] };
     all.forEach(function (e) {
-      if (isEmail(e.item)) parts.email.push(e);
-      else if (fromKeyPerson(e.item)) parts.key.push(e);
-      else if (e.kind === "waiting") parts.others.push(e);
-      else parts.channels.push(e);
+      if (!isEmail(e.item) && fromKeyPerson(e.item)) parts.key.push(e);
+      else if (e.kind !== "waiting") parts.fyi.push(e);
+      else if (isEmail(e.item)) parts.email.push(e);
+      else parts.others.push(e);
     });
     var defs = [
       { id: "key", name: keyTitle(), col: 0 },
       { id: "others", name: "Other DMs and mentions", col: 0 },
-      { id: "channels", name: "Key channels", col: 1 },
       { id: "email", name: "Email and Google Drive", col: 1 },
+      { id: "fyi", name: "FYI", col: 1 },
     ];
     var grid = $("list-inbox");
     grid.textContent = "";
@@ -1222,6 +1265,10 @@
     VIEWS.forEach(function (v) {
       var b = button(v.label + (counts[v.id] ? " " + counts[v.id] : ""), "view" + (state.view === v.id ? " on" : ""), function () { showView(v.id); });
       b.setAttribute("aria-pressed", state.view === v.id ? "true" : "false");
+      var fresh = v.id === "inbox" ? state.items.some(function (i) { var k = bucket(i); return inFilter(i) && (k === "waiting" || k === "look") && isFreshItem(i); })
+        : v.id === "tasks" ? (state.tasks.some(function (t) { return inFilter(t) && isFreshTask(t); }) || state.items.some(function (i) { return inFilter(i) && bucket(i) === "commit" && isFreshItem(i); }))
+        : false;
+      if (fresh && state.view !== v.id) b.appendChild(newDot());
       views.appendChild(b);
     });
 
@@ -1257,6 +1304,7 @@
     restoreDraftFocus(typing);
     restoreKeyFocus(keyFocus);
     restoreKeepFocus(keepFocus);
+    applySpot(); // v46: the highlight survives a redraw
   }
 
   // ---------- Meetings ----------
@@ -1346,9 +1394,64 @@
         if (p.getAttribute("data-inbox")) state.openInbox[p.getAttribute("data-inbox")] = true;
       }
     }
-    card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    card.classList.add("flash");
-    setTimeout(function () { card.classList.remove("flash"); }, 2200);
+    markSpot(function () { return onPage('[data-item="' + item.id + '"]'); });
+  }
+
+  // v46: the spot. The thing a link sent you to keeps a tint and an outline for a few seconds, and gets them back
+  // when the page is drawn again in that time (new data arriving used to wipe the old flash).
+  var spot = null; // { find: function that returns the node, until: time in ms, scrolls: how many times it may still scroll }
+  var SPOT_MS = 7000;
+  function applySpot() {
+    var old = document.querySelectorAll(".spot");
+    for (var i = 0; i < old.length; i++) old[i].classList.remove("spot");
+    if (!spot) return;
+    if (Date.now() > spot.until) { spot = null; return; }
+    var node = null;
+    try { node = spot.find(); } catch (_) { node = null; }
+    if (!node) return;
+    for (var p = node.parentElement; p; p = p.parentElement) {
+      if (p.tagName === "DETAILS" && !p.open) p.open = true;
+    }
+    node.classList.add("spot");
+    if (spot.scrolls > 0) {
+      spot.scrolls--;
+      // A tall card is shown from its top; a short one in the middle of the screen.
+      var tall = node.getBoundingClientRect().height > window.innerHeight * 0.6;
+      node.scrollIntoView({ block: tall ? "start" : "center", behavior: calm ? "auto" : "smooth" });
+    }
+  }
+  function markSpot(find) {
+    spot = { find: find, until: Date.now() + SPOT_MS, scrolls: 2 };
+    applySpot();
+    setTimeout(function () { if (spot && Date.now() >= spot.until) { spot = null; applySpot(); } }, SPOT_MS + 100);
+  }
+  // The words of a sentence that carry meaning, lower-cased.
+  function spotWords(text) {
+    var seen = {};
+    return String(text || "").toLowerCase().split(/[^a-z0-9à-ÿ$]+/).filter(function (w) {
+      if (w.length < 4 || seen[w]) return false;
+      seen[w] = true;
+      return true;
+    });
+  }
+  // Inside `page`, the visible line that says the most of what `text` says; null when nothing comes close.
+  function spotMatch(page, text) {
+    var want = spotWords(text);
+    if (!page || want.length < 3) return null;
+    var best = null;
+    var bestScore = 0;
+    var lines = page.querySelectorAll("p, li, .row-title, .cv-plain, .change-text");
+    for (var i = 0; i < lines.length; i++) {
+      var n = lines[i];
+      if (!n.offsetParent || n.querySelector("p, li")) continue;
+      var have = n.textContent.toLowerCase();
+      if (have.length < 12) continue;
+      var hits = 0;
+      for (var k = 0; k < want.length; k++) if (have.indexOf(want[k]) >= 0) hits++;
+      var score = hits / want.length;
+      if (hits >= 3 && score > bestScore) { best = n; bestScore = score; }
+    }
+    return bestScore >= 0.45 ? best : null;
   }
 
   // Scrolls to a card or row that was just drawn and lights it up for a moment.
@@ -1360,13 +1463,15 @@
         if (p.id) state.folds[p.id] = true;
       }
     }
-    node.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    node.classList.add("flash");
-    setTimeout(function () { node.classList.remove("flash"); }, 2200);
+    var sel = null;
+    ["data-project", "data-meeting", "data-item", "data-task", "data-run", "data-key"].forEach(function (a) {
+      if (!sel && node.getAttribute(a)) sel = "[" + a + '="' + node.getAttribute(a) + '"]';
+    });
+    markSpot(function () { return sel ? onPage(sel) : (node.isConnected ? node : null); });
   }
 
   // Opens the Projects tab with this project's page open (a topic opens the project it belongs to).
-  function goToProject(project) {
+  function goToProject(project, text) {
     var plan = parentOf(project) || project;
     clearSearch();
     if (state.filter !== "all" && state.filter !== plan.space) {
@@ -1375,7 +1480,12 @@
     }
     state.openProject = plan.id;
     showView("projects");
-    reveal(onPage('[data-project="' + plan.id + '"]'));
+    // The line of the project page that says what the link said; the project's own row when no line does.
+    markSpot(function () {
+      var page = onPage('[data-project="' + plan.id + '"]');
+      if (!page) return null;
+      return (text ? spotMatch(page, text) : null) || page.querySelector(".row-head") || page;
+    });
   }
 
   // Opens Meetings with this meeting's card in view.
@@ -1533,7 +1643,7 @@
 
   // A line of a prep list: a button to the thing when it is known, plain text when it is not.
   function prepText(x) {
-    var go = x.ref ? pointTarget(x.ref) : null;
+    var go = x.ref ? pointTarget(x.ref, x.text) : null;
     return go ? button(String(x.text), "ref cv-ref", go) : el("span", "cv-plain", String(x.text));
   }
 
@@ -2225,7 +2335,16 @@
       if (!rows.length) inside.appendChild(el("p", "empty", "Nothing is logged for this yet."));
       var list = el("div", "change-log");
       rows.forEach(function (c) { list.appendChild(changeLine(c, "log", p)); });
-      inside.appendChild(list);
+      // v46: the whole log is one fold, closed until you open it; the choice is remembered for every project.
+      if (rows.length) {
+        var fold = el("details", "log-fold");
+        var newest = rows[0] && rows[0].changed_on ? ", newest " + shortDate(new Date(rows[0].changed_on + "T12:00:00")) : "";
+        fold.appendChild(el("summary", null, rows.length + (rows.length === 1 ? " line" : " lines") + newest));
+        fold.open = needles.length ? true : barOpen("log", false);
+        fold.addEventListener("toggle", function () { if (!needles.length) setBar("log", fold.open); });
+        fold.appendChild(list);
+        inside.appendChild(fold);
+      }
     }
     if (state.addLine && sameId(state.addLine.pageId, p.id)) {
       inside.appendChild(addLineForm(p));
@@ -3389,6 +3508,7 @@
     var r = makeRow("div", "trow full" + (task.status === "done" ? " is-done is-quiet" : "") + (task.urgent && open ? " is-urgent" : ""), task.space);
     var row = r.node;
     row.setAttribute("data-task", task.id);
+    if (isFreshTask(task)) row.classList.add("is-new");
     var tick = document.createElement("input");
     tick.type = "checkbox";
     tick.className = "round row-check";
@@ -3450,9 +3570,7 @@
     render();
     var row = onPage('[data-task="' + task.id + '"]');
     if (!row) return;
-    row.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    row.classList.add("flash");
-    setTimeout(function () { row.classList.remove("flash"); }, 2200);
+    markSpot(function () { return onPage('[data-task="' + task.id + '"]'); });
   }
 
   // Tasks with a date first, by date; then the rest, newest first.
@@ -3473,6 +3591,7 @@
     box.setAttribute("data-section", id);
     var head = el(collapsible ? "summary" : "div", "tsec-head");
     head.appendChild(el("span", "tsec-name", name));
+    if (rows.some(isFreshTask)) head.appendChild(newDot());
     head.appendChild(el("span", "count", String(rows.length)));
     box.appendChild(head);
     var body = el("div", "tsec-body rows with-check");
@@ -3520,17 +3639,27 @@
       tools.appendChild(b);
     });
     tools.appendChild(el("span", "gap"));
-    var all = button("All projects", "project" + (!state.project ? " on" : ""), function () { state.project = null; render(); });
-    tools.appendChild(all);
+    // v46: the projects are one list to pick from, not a row of buttons.
+    var pick = document.createElement("select");
+    pick.className = "project-pick" + (state.project ? " on" : "");
+    pick.setAttribute("aria-label", "Show the tasks of one project");
+    var every = el("option", null, "All projects");
+    every.value = "";
+    pick.appendChild(every);
     state.projects.forEach(function (p) {
       if (state.filter !== "all" && p.space !== state.filter) return;
       var n = openInSpace.filter(function (t) { return inProject(t, p.id); }).length;
       if (!n && !sameId(state.project, p.id)) return;
-      tools.appendChild(button(projectLabel(p) + " " + n, "project" + (sameId(state.project, p.id) ? " on" : ""), function () {
-        state.project = sameId(state.project, p.id) ? null : p.id;
-        render();
-      }));
+      var o = el("option", null, projectLabel(p) + " (" + n + ")");
+      o.value = String(p.id);
+      o.selected = sameId(state.project, p.id);
+      pick.appendChild(o);
     });
+    pick.addEventListener("change", function () {
+      state.project = pick.value ? Number(pick.value) : null;
+      render();
+    });
+    tools.appendChild(pick);
 
     var group = function (id, name, rows) {
       if (!rows.length) return;
@@ -4296,6 +4425,25 @@
 
   function isNewProject(p) {
     return knownChanges(p).some(isNewChange);
+  }
+
+  // v46: the dot. Anything that arrived since your last visit carries the same dot as the organisations do:
+  // an inbox item of any kind (needs you, FYI, suggested task) and a task. A section that holds one carries it too.
+  function isFreshItem(item) {
+    var since = newSince(item.space);
+    if (!since || stampOf(item.created_at) <= since) return false;
+    var b = bucket(item);
+    return b === "waiting" || b === "look" || b === "commit";
+  }
+  function isFreshTask(task) {
+    var since = newSince(task.space);
+    return !!since && task.status === "open" && stampOf(task.created_at) > since;
+  }
+  function newDot() {
+    var dot = el("span", "new-dot");
+    dot.setAttribute("role", "img");
+    dot.setAttribute("aria-label", "new since your last visit");
+    return dot;
   }
 
   // The small quiet marker that goes first in a row's quiet line.
@@ -5527,7 +5675,7 @@
   }
 
   // Where a point of the review leads; null when the thing is no longer open or not loaded.
-  function pointTarget(ref) {
+  function pointTarget(ref, text) {
     if (!ref || !ref.kind || ref.id === undefined || ref.id === null) return null;
     var same = function (x) { return String(x.id) === String(ref.id); };
     if (ref.kind === "item") {
@@ -5541,14 +5689,14 @@
     }
     if (ref.kind === "plan" || ref.kind === "project") {
       var plan = state.projects.filter(same)[0];
-      return plan ? function () { goToProject(plan); } : null;
+      return plan ? function () { goToProject(plan, text); } : null;
     }
     if (ref.kind === "key_date") {
       // The project that owns the key date; Projects itself when it belongs to none.
       var key = keyById(ref.id);
       if (!key) return null;
       var owner = projectById(key.project_id);
-      return owner ? function () { goToProject(owner); } : function () { clearSearch(); showView("projects"); };
+      return owner ? function () { goToProject(owner, text); } : function () { clearSearch(); showView("projects"); };
     }
     if (ref.kind === "meeting") {
       var meeting = state.meetings.filter(same)[0];
@@ -5566,6 +5714,12 @@
       ? ["metaculus", "cea", "personal"].filter(function (sp) { return sp !== "personal" || coverFor(sp); })
       : [state.filter];
     var shown = 0;
+    // v46: the card folds. Open on a wide screen, closed on a phone, until you choose; a search always opens it.
+    var reviewOpen = needles.length ? true : barOpen("cv-review", wide());
+    if (!needles.length) {
+      blk.head.appendChild(button(reviewOpen ? "Hide" : "Show", "quiet cv-link", function () { setBar("cv-review", !reviewOpen); render(); }));
+      blk.body.hidden = !reviewOpen;
+    }
     spaces.forEach(function (space) {
       var row = coverFor(space);
       var points = row && Array.isArray(row.points) ? row.points.filter(function (p) { return p && p.text; }) : [];
@@ -5591,7 +5745,7 @@
           points.forEach(function (p) {
             var li = el("li", "cv-point");
             li.appendChild(el("span", "pill cv-kind cv-kind-" + (KIND_TAGS[p.kind] ? p.kind : "heads_up"), KIND_TAGS[p.kind] || "Heads-up"));
-            var go = pointTarget(p.ref);
+            var go = pointTarget(p.ref, p.text);
             if (go) li.appendChild(button(String(p.text), "ref cv-ref", go));
             else li.appendChild(el("span", "cv-plain", String(p.text)));
             ul.appendChild(li);
@@ -5611,6 +5765,7 @@
       }
       blk.body.appendChild(org);
     });
+    if (!needles.length && !reviewOpen && shown) blk.head.querySelector(".count").textContent = shown + " points";
     return shown;
   }
 
@@ -7894,9 +8049,7 @@
     var card = onPage('[data-run="' + run.id + '"]');
     window.scrollTo(0, 0);
     if (!card) return;
-    card.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
-    card.classList.add("flash");
-    setTimeout(function () { card.classList.remove("flash"); }, 2200);
+    markSpot(function () { return onPage('[data-run="' + run.id + '"]'); });
   }
 
   // ----- Work -----
@@ -8472,6 +8625,23 @@
     add.disabled = false;
     add.textContent = "Add";
     $("task-title").value = "";
+  });
+
+  // v46: Quick capture on Today. "Add as task" takes the same text through the one-line add of the Tasks view.
+  $("cvnote-task").addEventListener("click", async function () {
+    var box = $("cvnote-body");
+    var text = box.value.trim().slice(0, 500);
+    if (!text) { box.focus(); return; }
+    var add = $("cvnote-task");
+    add.disabled = true;
+    add.textContent = "Working it out…";
+    var picked = $("cvnote-space").value;
+    var space = state.filter !== "all" ? state.filter : (picked || readPref("desk.task-space", "metaculus"));
+    var s = await suggest({ text: text, space: state.filter !== "all" ? state.filter : (picked || null) });
+    showDialog(withSuggestion(blankTask(space, text), s), s ? "Suggested from what you typed. Change anything, then save." : "Could not get a suggestion. Fill in what you need, then save.");
+    add.disabled = false;
+    add.textContent = "Add as task";
+    box.value = "";
   });
 
   $("plan-add").addEventListener("click", function () { openPlanDialog(null, null); });
