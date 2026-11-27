@@ -1195,6 +1195,42 @@ textarea.run-text:read-only { background: transparent; color: var(--muted); }
 }
 .fyi-tools { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 0 2px; }
 .fyi-tools .btn.armed { border-color: var(--danger); color: var(--danger); }
+/* ---------- DRAFT: search is an icon at the end of the tab row ---------- */
+.viewbar { display: flex; align-items: center; gap: 8px; max-width: 1240px; margin: 0 auto; padding: 8px 20px 0; border-bottom: 1px solid var(--line); }
+.viewbar > .views { flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; padding: 0; border-bottom: 0; overflow-x: auto; scrollbar-width: none; }
+.viewbar > .views::-webkit-scrollbar { display: none; }
+.viewbar > .searchbar { flex: none; max-width: none; margin: 0 0 4px; padding: 0; gap: 8px; }
+/* Closed: a round button with a magnifying glass. It opens while you type in it or while it holds words. */
+.viewbar #search {
+  flex: none; width: 36px; min-height: 36px; padding: 0 0 0 34px; border-radius: 999px; cursor: pointer; color: transparent;
+  background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%238a8a8a' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5L14 14'/%3E%3C/svg%3E") no-repeat 9px center;
+  transition: width 0.15s ease;
+}
+.viewbar #search::placeholder { color: transparent; }
+.viewbar #search:focus, .viewbar #search:not(:placeholder-shown) { width: min(260px, 56vw); padding-right: 12px; cursor: text; color: inherit; }
+.viewbar #search:focus::placeholder { color: var(--muted); }
+.viewbar .search-count:empty { display: none; }
+@media (max-width: 520px) {
+  .viewbar { padding: 6px 14px 0; }
+  .viewbar #search:focus, .viewbar #search:not(:placeholder-shown) { width: min(200px, 52vw); }
+  .viewbar .search-count { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .viewbar #search { transition: none; } }
+
+/* ---------- DRAFT: the dot on what is new since your last visit ---------- */
+/* The same dot as on an organisation: after a section's name, on the Inbox and Tasks tabs, and before the title of a card. */
+.new-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); margin-left: 6px; vertical-align: 0.1em; }
+.view { position: relative; }
+.view > .new-dot { position: absolute; top: 4px; right: 0; margin: 0; }
+.row.is-new > .row-head::after { content: ""; position: absolute; top: -5px; right: -5px; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); border: 2px solid var(--bg); pointer-events: none; }
+/* In a list without gaps (the tray) the dot sits inside the corner so it is not cut off. */
+#list-suggested .row.is-new > .row-head::after, #list-later-sug .row.is-new > .row-head::after { top: 4px; right: 4px; border-color: var(--surface); }
+
+/* ---------- DRAFT: Tasks: the projects are a list to pick from ---------- */
+.project-pick { flex: 0 1 260px; min-width: 0; max-width: 100%; padding: 4px 10px; min-height: 36px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: var(--fs-quiet); }
+.project-pick.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+@media (max-width: 600px) { .task-tools > .project-pick { flex: 1 1 auto; font-size: 16px; min-height: 40px; } }
+
 /* ---------- DRAFT: collapsed cards in the Tasks and Inbox lists ---------- */
 /* Like on Today: at most two lines of title and one quiet line cut with an ellipsis. Expanding the card shows everything. */
 #list-tasks .trow.full:not(.is-open) .row-title,
@@ -1259,4 +1295,4 @@ p.spot, li.spot, .cv-plain.spot, .change-text.spot { padding: 2px 4px; margin-le
   #cv-note .note-row select { flex: 1 1 80px; }
   #cv-note .note-row .primary, #cv-note .note-row .btn { padding: 8px 10px; white-space: nowrap; }
 }
-.updated::after { content: " · Draft 9"; }
+.updated::after { content: " · Draft 10"; }

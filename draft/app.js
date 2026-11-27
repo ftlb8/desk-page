@@ -782,6 +782,7 @@
     var r = makeRow("article", "card item-row full urgency-" + item.urgency + (fyi ? " is-quiet" : "") + (kind === "closed" || kind === "later" ? " is-quiet" : ""), item.space);
     var node = r.node;
     node.setAttribute("data-item", item.id);
+    if (kind !== "closed" && kind !== "later" && isFreshItem(item)) node.classList.add("is-new");
     var title = button(item.title, "title row-title", function () {});
     r.main.appendChild(title);
 
@@ -800,7 +801,7 @@
     } else {
       meta = (promise ? "Promised to " + (item.owed_to || "someone") : authorLabel(item)) + " · " + whereLabel(item);
     }
-    if (isNewItem(item) && (kind === "waiting" || kind === "commit")) sub.unshift(newMark());
+    // DRAFT: the dot before the title says it now; the quiet "New" word is left out.
     if (kind === "commit" && item.theme) sub.push(el("span", "theme-text", item.theme));
     sub.push(el("span", "meta", meta));
     // The gist, so the row gives its context without a click (opening the row shows it in full)
@@ -990,6 +991,10 @@
     var list = $("list-suggested");
     list.textContent = "";
     $("n-suggested").textContent = items.length ? String(items.length) : "";
+    var sum = $("box-suggested").querySelector("summary");
+    var had = sum.querySelector(".new-dot");
+    if (had) had.remove();
+    if (items.some(isFreshItem)) sum.appendChild(newDot());
     items.forEach(function (item) { list.appendChild(card(item, "commit", "sug")); });
   }
 
@@ -1024,6 +1029,7 @@
     box.setAttribute("data-inbox", id);
     var head = el("summary", "tsec-head");
     head.appendChild(el("span", "tsec-name", name));
+    if (entries.some(function (e) { return isFreshItem(e.item); })) head.appendChild(newDot());
     head.appendChild(el("span", "count", String(entries.length)));
     box.appendChild(head);
     var body = el("div", "tsec-body rows");
@@ -1259,6 +1265,10 @@
     VIEWS.forEach(function (v) {
       var b = button(v.label + (counts[v.id] ? " " + counts[v.id] : ""), "view" + (state.view === v.id ? " on" : ""), function () { showView(v.id); });
       b.setAttribute("aria-pressed", state.view === v.id ? "true" : "false");
+      var fresh = v.id === "inbox" ? state.items.some(function (i) { var k = bucket(i); return inFilter(i) && (k === "waiting" || k === "look") && isFreshItem(i); })
+        : v.id === "tasks" ? (state.tasks.some(function (t) { return inFilter(t) && isFreshTask(t); }) || state.items.some(function (i) { return inFilter(i) && bucket(i) === "commit" && isFreshItem(i); }))
+        : false;
+      if (fresh && state.view !== v.id) b.appendChild(newDot());
       views.appendChild(b);
     });
 
@@ -3498,6 +3508,7 @@
     var r = makeRow("div", "trow full" + (task.status === "done" ? " is-done is-quiet" : "") + (task.urgent && open ? " is-urgent" : ""), task.space);
     var row = r.node;
     row.setAttribute("data-task", task.id);
+    if (isFreshTask(task)) row.classList.add("is-new");
     var tick = document.createElement("input");
     tick.type = "checkbox";
     tick.className = "round row-check";
@@ -3580,6 +3591,7 @@
     box.setAttribute("data-section", id);
     var head = el(collapsible ? "summary" : "div", "tsec-head");
     head.appendChild(el("span", "tsec-name", name));
+    if (rows.some(isFreshTask)) head.appendChild(newDot());
     head.appendChild(el("span", "count", String(rows.length)));
     box.appendChild(head);
     var body = el("div", "tsec-body rows with-check");
@@ -3627,17 +3639,27 @@
       tools.appendChild(b);
     });
     tools.appendChild(el("span", "gap"));
-    var all = button("All projects", "project" + (!state.project ? " on" : ""), function () { state.project = null; render(); });
-    tools.appendChild(all);
+    // DRAFT: the projects are one list to pick from, not a row of buttons.
+    var pick = document.createElement("select");
+    pick.className = "project-pick" + (state.project ? " on" : "");
+    pick.setAttribute("aria-label", "Show the tasks of one project");
+    var every = el("option", null, "All projects");
+    every.value = "";
+    pick.appendChild(every);
     state.projects.forEach(function (p) {
       if (state.filter !== "all" && p.space !== state.filter) return;
       var n = openInSpace.filter(function (t) { return inProject(t, p.id); }).length;
       if (!n && !sameId(state.project, p.id)) return;
-      tools.appendChild(button(projectLabel(p) + " " + n, "project" + (sameId(state.project, p.id) ? " on" : ""), function () {
-        state.project = sameId(state.project, p.id) ? null : p.id;
-        render();
-      }));
+      var o = el("option", null, projectLabel(p) + " (" + n + ")");
+      o.value = String(p.id);
+      o.selected = sameId(state.project, p.id);
+      pick.appendChild(o);
     });
+    pick.addEventListener("change", function () {
+      state.project = pick.value ? Number(pick.value) : null;
+      render();
+    });
+    tools.appendChild(pick);
 
     var group = function (id, name, rows) {
       if (!rows.length) return;
@@ -4403,6 +4425,25 @@
 
   function isNewProject(p) {
     return knownChanges(p).some(isNewChange);
+  }
+
+  // DRAFT: the dot. Anything that arrived since your last visit carries the same dot as the organisations do:
+  // an inbox item of any kind (needs you, FYI, suggested task) and a task. A section that holds one carries it too.
+  function isFreshItem(item) {
+    var since = newSince(item.space);
+    if (!since || stampOf(item.created_at) <= since) return false;
+    var b = bucket(item);
+    return b === "waiting" || b === "look" || b === "commit";
+  }
+  function isFreshTask(task) {
+    var since = newSince(task.space);
+    return !!since && task.status === "open" && stampOf(task.created_at) > since;
+  }
+  function newDot() {
+    var dot = el("span", "new-dot");
+    dot.setAttribute("role", "img");
+    dot.setAttribute("aria-label", "new since your last visit");
+    return dot;
   }
 
   // The small quiet marker that goes first in a row's quiet line.
