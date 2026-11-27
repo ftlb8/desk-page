@@ -41,6 +41,10 @@ The backend (collector, database rules, agents) is in the private repository `ft
 - **The spot:** a link to a task, item, meeting, run or project leaves a tint and outline on its target for 7 seconds, kept across redraws; for a project it marks the line that says what the link said.
 - **Phone:** the top bar is one line (the organisation filter scrolls sideways, the connection is a dot).
 
+## Version 47
+
+- **Icon and install:** the page has an icon (three rows with the organisations' colours) and a web app manifest (`manifest.webmanifest`, icons in `icons/`), so it can be installed on a phone's home screen and opens without the browser's bars. The content security policy allows the page's own manifest. `icons/make-icons.py` draws the icon files again (plain Python, no libraries).
+
 ## Releasing a change
 
 Raise the number in `index.html` (the `desk-version` tag and the `?v=` on each file) with every change. Browsers keep the old files for up to ten minutes otherwise. The page shows its version at the bottom.
